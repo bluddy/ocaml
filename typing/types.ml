@@ -33,7 +33,7 @@ and type_expr = transient_expr
 
 and type_desc =
     Tvar of string option
-  | Tarrow of arg_label * type_expr * type_expr * commutable
+  | Tarrow of arg_label * type_expr * type_expr * commutable * effect_row
   | Ttuple of (string option * type_expr) list
   | Tconstr of Path.t * type_expr list * abbrev_memo ref
   | Tobject of type_expr * (Path.t * type_expr list) option ref
@@ -44,6 +44,7 @@ and type_desc =
   | Tpoly of type_expr * type_expr list
   | Tpackage of package
   | Tfunctor of arg_label * Ident.Unscoped.t * package * type_expr
+  | Teffect_row of effect_row
   | Texpand of type_expr * abbrev
   | Tlink of type_expr
   | Tsubst of type_expr * type_expr option
@@ -63,6 +64,18 @@ and row_desc =
       row_closed: bool;
       row_fixed: fixed_explanation option;
       row_name: (Path.t * type_expr list) option }
+and effect_row =
+    { er_fields: (label * effect_flag) list;
+      er_more: type_expr;
+      er_closed: bool; }
+and effect_flag =
+  | EFpresent
+  | EFabsent
+  | EFvar of effect_flag_cell
+and effect_flag_cell = effect_flag_content ref
+and effect_flag_content =
+  | EFnone
+  | EFlink of effect_flag
 and fixed_explanation =
   | Univar of type_expr | Fixed_private | Reified of Path.t | Rigid
 and row_field = [`some] row_field_gen
@@ -497,6 +510,7 @@ type change =
   | Cuniv of type_expr option ref * type_expr option
   | Cuident of Ident.Unscoped.change
   | Cabbr_level of abbrev * int
+  | Ceff_flag of effect_flag_cell * effect_flag_content
 
 type changes =
     Change of change * changes ref
@@ -617,6 +631,7 @@ let [@inline hint] repr t =
   | Tpoly _
   | Tpackage _
   | Tfunctor _
+  | Teffect_row _
   | Tsubst _ -> t
   | _ -> repr_slow_path t
 
@@ -840,6 +855,68 @@ let match_row_field ~present ~absent ~either (f : row_field) =
       in
       either no_arg arg_type matched (ext,e)
 
+(* Constructor and accessors for [effect_row] *)
+
+let create_effect_row ~fields ~more ~closed =
+  { er_fields = fields; er_more = more; er_closed = closed }
+
+let rec effect_row_fields row =
+  match get_desc row.er_more with
+  | Teffect_row row' ->
+      row.er_fields @ effect_row_fields row'
+  | _ ->
+      row.er_fields
+
+let rec effect_row_repr row =
+  match get_desc row.er_more with
+  | Teffect_row row' ->
+      effect_row_repr {
+        er_fields = row.er_fields @ row'.er_fields;
+        er_more = row'.er_more;
+        er_closed = row'.er_closed;
+      }
+  | Tnil ->
+      { row with er_closed = true }
+  | _ ->
+      row
+
+let effect_row_more row =
+  (effect_row_repr row).er_more
+
+let effect_row_closed row =
+  (effect_row_repr row).er_closed
+
+let is_pure_effect_row row =
+  let r = effect_row_repr row in
+  r.er_fields = [] && r.er_closed
+
+type effect_flag_view =
+  | EF_present
+  | EF_absent
+  | EF_var
+
+type effect_row_repr = effect_row =
+  { er_fields: (label * effect_flag) list;
+    er_more:   type_expr;
+    er_closed: bool; }
+
+let rec effect_flag_internal_repr = function
+  | EFvar ({ contents = EFlink f } as cell) ->
+      let f' = effect_flag_internal_repr f in
+      cell := EFlink f';
+      f'
+  | f -> f
+
+let effect_flag_repr f =
+  match effect_flag_internal_repr f with
+  | EFpresent -> EF_present
+  | EFabsent -> EF_absent
+  | EFvar _ -> EF_var
+
+let eff_present = EFpresent
+let eff_absent = EFabsent
+let eff_var () = EFvar (ref EFnone)
+
 (**** Some type creators ****)
 
 let new_id = Local_store.s_ref (-1)
@@ -868,6 +945,7 @@ let undo_change = function
   | Cuniv  (r, v)    -> r := v
   | Cuident change    -> Ident.Unscoped.undo_change change
   | Cabbr_level (a, l) -> a.abbr_level <- l
+  | Ceff_flag (r, v)   -> r := v
 
 type snapshot = changes ref * int
 let last_snapshot = Local_store.s_ref 0
@@ -996,6 +1074,18 @@ let rec link_commu ~(inside : commutable) (c : commutable) =
   | _ -> Misc.fatal_error "Types.link_commu"
 
 let set_commu_ok c = link_commu ~inside:c Cok
+
+let rec link_effect_flag ~(inside : effect_flag) (f : effect_flag) =
+  match inside with
+  | EFvar ({ contents = EFnone } as cell) ->
+      let f = effect_flag_internal_repr f in
+      if inside != f then begin
+        log_change (Ceff_flag (cell, !cell));
+        cell := EFlink f
+      end
+  | EFvar { contents = EFlink inside } ->
+      link_effect_flag ~inside f
+  | _ -> Misc.fatal_error "Types.link_effect_flag"
 
 let snapshot () =
   let old = !last_snapshot in

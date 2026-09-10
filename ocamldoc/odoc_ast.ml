@@ -530,7 +530,7 @@ module Analyser =
             in
             let real_type =
               match get_desc met_type with
-              Tarrow (_, _, t, _) ->
+              Tarrow (_, _, t, _, _) ->
                 t
             |  _ ->
                 (* ?!? : not an arrow type ! return the original type *)
@@ -572,7 +572,7 @@ module Analyser =
           in
           let real_type =
             match get_desc exp.exp_type with
-              Tarrow (_, _, t,_) ->
+              Tarrow (_, _, t, _, _) ->
                 t
             |  _ ->
                 (* ?!? : not an arrow type ! return the original type *)

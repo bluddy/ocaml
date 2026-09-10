@@ -83,10 +83,13 @@ and raw_lid_type_list tl =
 and raw_type_option ot = raw_option raw_type ot
 and raw_type_desc ppf = function
     Tvar name -> fprintf ppf "Tvar %a" print_name name
-  | Tarrow(l,t1,t2,c) ->
-      fprintf ppf "@[<hov1>Tarrow(\"%s\",@,%a,@,%a,@,%s)@]"
+  | Tarrow(l,t1,t2,c,eff) ->
+      fprintf ppf "@[<hov1>Tarrow(\"%s\",@,%a,@,%a,@,%s,%s)@]"
         (string_of_label l) raw_type t1 raw_type t2
         (if is_commu_ok c then "Cok" else "Cunknown")
+        (if is_pure_effect_row eff then "Pure" else "Eff")
+  | Teffect_row _ ->
+      fprintf ppf "Teffect_row"
   | Tfunctor (l, id, {pack_path; pack_constraints}, t2) ->
     fprintf ppf "@[<hov1>Tfunctor(\"%s\",@,%a,@,(%a,@,%a),@,%a)@]"
       (string_of_label l) Ident.Unscoped.print id

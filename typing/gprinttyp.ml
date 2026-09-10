@@ -680,8 +680,10 @@ module Digraph = struct
     let std_edge = edge std in
     match desc with
     | Types.Tvar name -> mk "%a" Pp.pretty_var name
-    | Types.Tarrow(l,t1,t2,_) ->
+    | Types.Tarrow(l,t1,t2,_,_) ->
        mk "→%a" Pp.exponent_of_label l |> numbered [t1; t2]
+    | Types.Teffect_row _ ->
+       mk "<eff>"
     | Types.Tfunctor(l,us,{pack_path; pack_constraints},t2) ->
         mk "→%a (%a : %a)" Pp.exponent_of_label l
                     Ident.Unscoped.print us

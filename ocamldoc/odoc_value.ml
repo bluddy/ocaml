@@ -64,7 +64,7 @@ let parameter_list_from_arrows typ =
   let rec iter t =
     let open Types in
     match get_desc t with
-      Tarrow (l, t1, t2, _) ->
+      Tarrow (l, t1, t2, _, _) ->
         (l, t1) :: (iter t2)
     | Tfunctor (l, _, pack, t2) ->
         (l, Ctype.newty (Tpackage pack)) :: (iter t2)

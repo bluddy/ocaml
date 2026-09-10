@@ -893,8 +893,9 @@ let reachable
   match get_desc ty with
   | Tobject _ | Tfield _ | Tnil -> ()
   | Tvariant _ -> ()
+  | Teffect_row _ -> ()
   | Tvar _ | Tunivar _ -> ()
-  | Tarrow (_, t1, t2, _) ->
+  | Tarrow (_, t1, t2, _, _) ->
       rectypes_guarded ~trace:(Contains (ty, t1) :: trace) t1;
       rectypes_guarded ~trace:(Contains (ty, t2) :: trace) t2;
   | Ttuple tl ->
@@ -1762,7 +1763,7 @@ let rec parse_native_repr_attributes env core_type ty ~global_repr =
   | Ptyp_arrow _, Tarrow _, Native_repr_attr_present kind  ->
       Error.log_and_raise (core_type.ptyp_loc)
         (Cannot_unbox_or_untag_type kind)
-  | Ptyp_arrow (_, ct1, ct2), Tarrow (_, t1, t2, _), _ ->
+  | Ptyp_arrow (_, ct1, ct2, _), Tarrow (_, t1, t2, _, _), _ ->
     let t1, _ = Btype.tpoly_get_poly t1 in
     let repr_arg = make_native_repr env ct1 t1 ~global_repr in
     let repr_args, repr_res =

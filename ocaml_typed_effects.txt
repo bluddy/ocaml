@@ -1,0 +1,216 @@
+Architectural Specification: Open-by-Default Row-Polymorphic Algebraic Effects for OCaml
+This document specifies the theoretical, mechanical, and compiler modifications required to introduce an open-by-default, row-polymorphic effect typing system into the OCaml compiler.
+1. Executive Summary & Design Principles
+1. Ambient Delimited Control, Not Monads: The system avoids the 4-tier coloring problem inherent to monadic abstractions (Pure $\to$ Concrete Monad $\to$ Monad-Polymorphic $\to$ MTL Multi-Monad Composition). It provides Tier 4 multi-effect composition out-of-the-box using direct-style syntax.
+2. Open-by-Default Ergonomics: Higher-order combinators (e.g., List.map) automatically accept open effect rows ($\forall \rho$). Standard ML libraries act as transparent effect pipelines without requiring source-level annotations.
+3. Purity as Deliberate Restriction: Purity is not a default barrier; it is an opt-in constraint (-[ pure ]-> or $\emptyset$) applied at system boundaries, sandboxes, and non-suspending sections.
+4. Pragmatic Scope (Zero Legacy Breakdown):
+   * Tracked: Algebraic effect yields (Effect.perform), delimited control jumps, fiber scheduling, dynamic variables (Affect.Dynamic).
+   * Untracked / Ambient: In-place heap mutation (ref, Hashtbl), native exceptions (raise, try ... with), memory allocations. "Pure" means algebraically closed and non-suspending.
+5. Deterministic Unification (Lists, Not Sets): Effects are modeled as structured association rows with tail variables, dropping idempotence from the unification engine to guarantee linear-time Most General Unifiers (MGU).
+6. Presence/Absence Flags: Effect exclusion (e.g., negative constraints like ~Yield) is implemented via Didier Rémy’s three-point flag algebra ($\mathbf{Pre}$, $\mathbf{Abs}$, $\delta$), directly reusing OCaml's polymorphic variant machinery.
+2. Core Formal Calculus
+2.1 Grammar of Types and Rows
+
+
+$$\begin{aligned} \text{Flags } \varphi &::= \mathbf{Pre} \mid \mathbf{Abs} \mid \delta \\ \text{Labels } \ell &\in \mathcal{L} \\ \text{Row Variables } \rho &\in \mathcal{V}_{\text{row}} \\ \text{Effect Rows } R &::= \emptyset \mid \rho \mid \langle \ell : \varphi \mid R \rangle \\ \text{Types } \tau &::= \alpha \mid \text{int} \mid \text{string} \mid \dots \mid \tau_1 \xrightarrow{R} \tau_2 \end{aligned}$$
+* $\mathbf{Pre}$: Effect is explicitly emitted/performed.
+* $\mathbf{Abs}$: Effect is statically forbidden (excluded).
+* $\delta$: Presence of effect is polymorphic.
+* $\emptyset$: The closed, empty row (pure).
+2.2 Equivalence & Well-Formedness
+Rows are associative and commute over distinct labels:
+
+
+$$\langle \ell_1 : \varphi_1 \mid \langle \ell_2 : \varphi_2 \mid R \rangle \rangle \cong \langle \ell_2 : \varphi_2 \mid \langle \ell_1 : \varphi_1 \mid R \rangle \rangle \quad (\text{if } \ell_1 \neq \ell_2)$$
+Duplicate Exclusion (No Idempotence in Unification):
+A row term is well-formed iff each label $\ell$ occurs at most once per lexical row chain:
+
+
+$$\forall \ell \in \text{Labels}(R), \quad \text{Count}(\ell, R) \le 1$$
+3. Type Inference & Unification Mechanics
+3.1 Higher-Order Auto-Lifting (Axiom of Transparency)
+Unannotated source arrows desugar inside the type checker as follows:
+* Argument positions (inputs):
+$$\tau_1 \to \tau_2 \quad \Longrightarrow \quad \tau_1 \xrightarrow{\rho_{\text{amb}}} \tau_2$$
+* Higher-order combinator propagation:
+$$\text{val map} : (\alpha \to \beta) \to \alpha \text{ list} \to \beta \text{ list} \quad \Longrightarrow \quad \forall \alpha, \beta, \rho.\; (\alpha \xrightarrow{\rho} \beta) \to \alpha \text{ list} \xrightarrow{\rho} \beta \text{ list}$$
+3.2 First-Order Deterministic Closed Rows
+First-order functions do not allocate open row variables. Concrete operations emit static labels:
+
+
+$$\frac{\Gamma \vdash e_1 : \tau_1 \ / \ R_1 \quad \Gamma \vdash e_2 : \tau_2 \ / \ R_2}{\Gamma \vdash (e_1; e_2) : \tau_2 \ / \ R_1 \cup_{\text{concrete}} R_2}$$
+Where $R_1 \cup_{\text{concrete}} R_2$ simply merges concrete ground tags into a closed row $\langle \ell_1 : \mathbf{Pre}, \ell_2 : \mathbf{Pre} \mid \emptyset \rangle$.
+3.3 Flag Unification Rules ($\sim$)
+When two rows are unified:
+
+
+$$\mathcal{U}(\langle \ell : \varphi_1 \mid R_1 \rangle, \; R_2)$$
+   1. Extraction: Decompose $R_2 \cong \langle \ell : \varphi_2 \mid R_2' \rangle$.
+   2. Flag Resolution:
+$$\begin{array}{rcl} \mathbf{Pre} \sim \mathbf{Pre} &\implies& \text{Success} \\ \mathbf{Abs} \sim \mathbf{Abs} &\implies& \text{Success} \\ \mathbf{Pre} \sim \mathbf{Abs} &\implies& \textbf{Type Error (Negative Constraint Violated)} \\ \delta \sim \varphi &\implies& [\delta \mapsto \varphi] \end{array}$$
+   3. Tail Resolution: $\mathcal{U}(R_1, R_2')$.
+3.4 Multi-Callback Coalescing
+To avoid multi-variable joins ($\rho_1 \cup \rho_2$), callbacks within the same lexical scope share a fresh ambient row variable $\rho_{\text{amb}}$.
+When joining distinct row variables across application boundaries:
+
+
+$$\frac{\rho_3 \text{ is fresh}}{\text{Merge}(\rho_1, \rho_2) \Downarrow (\rho_3, \, [\rho_1 \mapsto \rho_3, \, \rho_2 \mapsto \rho_3])}$$
+4. Integration with OCaml Type Machinery
+4.1 Covariance & The Relaxed Value Restriction
+      * The latent effect row on a function arrow $\tau_1 \xrightarrow{R} \tau_2$ sits in a strictly covariant position (effects are outputs/emissions):
+$$R_1 \le R_2 \implies (\tau_1 \xrightarrow{R_1} \tau_2) \le (\tau_1 \xrightarrow{R_2} \tau_2)$$
+      * Generalization Rule: Under Jacques Garrigue's Relaxed Value Restriction, any row variable $\rho$ appearing exclusively in positive (covariant) positions within a non-value expression (e.g. let double_all = List.map (fun x -> x * 2)) is safely generalized ($\forall \rho$). It never degrades into a weak row variable '_e.
+4.2 GADTs and Pattern Branches
+         * Branch Unification: Normal pattern-match branches compute the least upper bound (union) of all branch effect rows.
+         * Existential Isolation: Existential effect rows unpacked from a GADT constructor cannot escape into an enclosing row unless handled locally or constrained by an outer bound.
+         * Indexation for Fine-Grained Purity: If branch-specific purity is required, the GADT must index its effect parameter explicitly:
+OCaml
+type ('a, 'e) expr =
+ | Lit   : int -> (int, pure) expr
+ | Query : string -> (string, [ Db | 'e ]) expr
+
+4.3 OCaml Objects
+            * Objects treat method effect rows covariantly.
+            * A single ambient row variable is coalesced across all methods in an object literal by default to avoid signature explosion ($N$ methods $\ne N$ distinct row variables).
+5. Concrete Compiler Modifications
+
+
+
+
+
+
+                                  OCAML COMPILER PIPELINE
+┌──────────────┐      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+│    Parser    │ ───► │  Typecore /  │ ───► │   Btype /    │ ───► │   Flambda 2  │
+│  (Lex/Parse) │      │  Typetexp    │      │  Ctype (MGU) │      │ (Opt/Inline) │
+└──────────────┘      └──────────────┘      └──────────────┘      └──────────────┘
+      │                     │                     │                     │
+      ▼                     ▼                     ▼                     ▼
+Add arrow effect      Desugar HOFs          Row association       Tail-resumption
+syntax:               to open rows;         lists; Remy flags     elimination;
+-[ Eff | 'e ]->       bind ambient vars     unification; MGU      unbox handlers
+
+File 1: parsing/parsetree.mli & parsing/parser.mly
+            * AST Extension: Extend core_type_desc with an optional effect row on arrows:
+OCaml
+type core_type_desc =
+ | ...
+ | Ptyp_arrow of arg_label * core_type * core_type * effect_row option
+and effect_row = {
+ erow_labels : (string * presence_flag) list;
+ erow_tail   : string option;
+}
+and presence_flag = F_Present | F_Absent | F_Var of string
+
+            * Grammar: Extend the arrow rule:
+               * Default -> parses as Ptyp_arrow(..., None).
+               * -[ Log, IO | 'e ]-> parses concrete labels and row tail 'e.
+               * -[ pure ]-> and -[]-> parse as closed empty row Ptyp_arrow(..., Some { erow_labels = []; erow_tail = None }).
+               * -[ ~Yield | 'e ]-> parses negative presence constraint (F_Absent).
+File 2: typing/types.ml & typing/btype.ml
+               * Internal Representation: Update type_expr to include effect rows within arrows:
+OCaml
+type type_desc =
+ | ...
+ | Tarrow of arg_label * type_expr * type_expr * row_representation
+and row_representation = {
+ row_fields : (label, flag_type) Btype.row_map;
+ row_more   : type_expr; (* Tail variable or Tnil *)
+ row_closed : bool;
+}
+
+               * Reuse Btype.row_map (already used for polymorphic variants and object types).
+File 3: typing/ctype.ml (The Unification Engine)
+                  * Arrow Unification: Modify unify_repr for Tarrow:
+                  * Unify argument types contravariantly.
+                  * Unify return types covariantly.
+                  * Invoke unify_effect_rows on the arrow effect representations.
+                  * Row Unification Algorithm:
+                  1. Peel shared labels and unify their presence flags via table lookup:
+                  * Pre vs Pre $\to$ Ok
+                  * Abs vs Abs $\to$ Ok
+                  * Pre vs Abs $\to$ Raise Typecore.Error (Effect_conflict (...))
+                  2. If one row ends in a variable $\rho$, instantiate $\rho$ to the remaining tail of the counterpart row.
+                  3. Enforce occurs-check on effect row variables to prevent recursive/cyclic effect rows.
+File 4: typing/typecore.ml & typing/typetexp.ml
+                  * HOF Desugaring: In type_arrow, if effect_row is None (unannotated), synthesize a fresh, unbound covariant row variable $\rho_{\text{amb}}$.
+                  * Effect Performance: Intercept calls to Effect.perform eff:
+                  * Extract the label $\ell$ associated with eff.
+                  * Add $\langle \ell : \mathbf{Pre} \mid \dots \rangle$ to the ambient environment’s current arrow effect row.
+                  * Handler Typing: For match ... with effect (Eff arg) k -> ...:
+                  * Strip label $\ell$ from the evaluated expression's effect row (row subtraction: $R \setminus \ell$).
+                  * Assign the remaining row tail to continuation k.
+File 5: middle_end/flambda2/ (Optimization Passes)
+                  * Tail-Resumptive Detection: Recognize handlers where continuation k is exclusively invoked in tail position (resume k v).
+                  * Devirtualization:
+                  * Eliminate the dynamic stack search (caml_perform).
+                  * Rewrite handler invocations into direct parameter passing (e.g., converting dynamic Reader.ask () to a register read).
+                  * Stack Allocation: Mark locally handled state/writer handlers with @local to allocate accumulator contexts on the native call stack, eliminating GC heap overhead.
+6. End-to-End Syntax and Verification Examples
+Example A: Universal Reuse of Standard Combinators
+
+
+
+
+
+
+OCaml
+(* List.map is completely unannotated; compiler infers open row 'e *)
+let rec map f = function
+ | [] -> []
+ | x :: xs -> let y = f x in y :: map f xs
+(* Inferred: ('a -['e]-> 'b) -> 'a list -['e]-> 'b list *)
+
+(* 1. Call with pure function: 'e is instantiated to pure *)
+let pure_result = map (fun x -> x * 2) [1; 2; 3]
+
+(* 2. Call with effectful query: 'e is instantiated to [ Net | 'e' ] *)
+let async_result = map (fun url -> Http.get url) urls
+(* Inferred effect of expression: [ Net | 'e' ] *)
+
+Example B: Non-Suspending Boundary Constraint (Jane Street Use-Case)
+
+
+
+
+
+
+OCaml
+(* Assert that a callback may perform any effect EXCEPT Yield *)
+val run_atomic : (unit -[ ~Yield | 'e ]-> 'a) -['e]-> 'a
+
+let test_valid () =
+ run_atomic (fun () ->
+   Affect.Dynamic.get current_span (* Valid: Dynamic read does not yield *)
+ )
+
+let test_invalid () =
+ run_atomic (fun () ->
+   Fiber.yield () (* FAILS COMPILE-TIME CHECK *)
+ )
+(* 
+  Error: The effect `Yield` is marked Present in the passed argument,
+  but is required to be Absent (~Yield) by `run_atomic`.
+*)
+
+Example C: Sandboxed Pure Evaluation
+
+
+
+
+
+
+OCaml
+(* Explicitly enforce closed, pure row *)
+val sandbox : (unit -[ pure ]-> 'a) -> 'a
+
+let untrusted_code () =
+ let _ = Http.get "https://evil.com" in
+ 42
+
+let _ = sandbox untrusted_code
+(*
+  Error: Cannot unify row [ Net | 'e ] with [ pure ].
+  Unhandled effect `Net` cannot escape the sandboxed boundary.
+*)

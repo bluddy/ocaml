@@ -286,6 +286,29 @@ let print_arg_label ppf (lbl : Asttypes.arg_label) =
   | Labelled s -> fprintf ppf "%a:" print_lident s
   | Optional s -> fprintf ppf "?%a:" print_lident s
 
+let print_effect_arrow ppf = function
+  | None ->
+      pp_print_string ppf " ->"
+  | Some { oer_labels = []; oer_tail = None; oer_closed = true } ->
+      pp_print_string ppf " -[]->"
+  | Some { oer_labels; oer_tail; oer_closed = _ } ->
+      pp_print_string ppf " -[ ";
+      let first = ref true in
+      List.iter (fun (lbl, flag) ->
+        if not !first then pp_print_string ppf ", " else first := false;
+        match flag with
+        | OF_Absent -> pp_print_string ppf ("~" ^ lbl)
+        | OF_Present -> pp_print_string ppf lbl
+        | OF_Var v -> pp_print_string ppf (lbl ^ ":" ^ v)
+      ) oer_labels;
+      begin match oer_tail with
+      | Some tail ->
+          if not !first then pp_print_string ppf " | " else first := false;
+          pp_print_string ppf ("'" ^ tail)
+      | None -> ()
+      end;
+      pp_print_string ppf " ]->"
+
 let rec print_out_type ppf =
   function
   | Otyp_alias {non_gen; aliased; alias } ->
@@ -301,11 +324,11 @@ let rec print_out_type ppf =
 
 and print_out_type_1 ppf =
   function
-    Otyp_arrow (lab, ty1, ty2) ->
+    Otyp_arrow (lab, ty1, ty2, eff) ->
       pp_open_box ppf 0;
       print_arg_label ppf lab;
       print_out_type_2 ~arg:true ppf ty1;
-      pp_print_string ppf " ->";
+      print_effect_arrow ppf eff;
       pp_print_space ppf ();
       print_out_type_1 ppf ty2;
       pp_close_box ppf ()

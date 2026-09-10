@@ -287,7 +287,10 @@ end = struct
               have to live in types.ml
              Let's just not. *)
         desc
-    | Tarrow (l,t1,t2,c) -> Tarrow (l, copy t1, copy t2, c)
+    | Tarrow (l,t1,t2,c,eff) ->
+        Tarrow (l, copy t1, copy t2, c, Btype.copy_effect_row copy eff)
+    | Teffect_row eff ->
+        Teffect_row (Btype.copy_effect_row copy eff)
     | Ttuple tl ->
         Ttuple (List.map (fun (lbl, t) -> lbl, copy t) tl)
     | Tconstr (p, tl, _) ->
@@ -3079,6 +3082,102 @@ let is_prim ~name funct =
       prim_name = name
   | _ -> false
 
+(**** Ambient effect tracking for typed algebraic effects ****)
+
+type ambient_scope = {
+  amb_row : Types.effect_row;
+}
+
+let ambient_effect_stack = ref ([] : ambient_scope list)
+
+let push_ambient_scope () =
+  let row = Btype.fresh_ambient_row_var () in
+  let scope = { amb_row = row } in
+  ambient_effect_stack := scope :: !ambient_effect_stack;
+  scope
+
+let pop_ambient_scope () =
+  match !ambient_effect_stack with
+  | [] -> None
+  | scope :: rest ->
+      ambient_effect_stack := rest;
+      Some scope
+
+let current_ambient_scope () =
+  match !ambient_effect_stack with
+  | [] -> None
+  | scope :: _ -> Some scope
+
+let is_pure_effect_row eff =
+  let r = Types.effect_row_repr eff in
+  r.er_closed && r.er_fields = []
+
+let emit_ambient_effect env eff =
+  if not (is_pure_effect_row eff) then begin
+    match current_ambient_scope () with
+    | None -> ()
+    | Some scope ->
+        try
+          Ctype.unify_effect_rows env scope.amb_row eff
+        with Ctype.Unify _ -> ()
+  end
+
+let collect_row_variables param_tys =
+  let row_vars = ref TypeSet.empty in
+  let visited = ref TypeSet.empty in
+  let rec iter_type ty =
+    let ty = Transient_expr.type_expr (Transient_expr.repr ty) in
+    if not (TypeSet.mem ty !visited) then begin
+      visited := TypeSet.add ty !visited;
+      match get_desc ty with
+      | Tarrow (_, t1, t2, _, eff) ->
+          let r = Types.effect_row_repr eff in
+          if not r.er_closed then begin
+            let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
+            match get_desc more with
+            | Tvar _ -> row_vars := TypeSet.add more !row_vars
+            | _ -> ()
+          end;
+          iter_type t1;
+          iter_type t2
+      | Ttuple l ->
+          List.iter (fun (_, t) -> iter_type t) l
+      | Tconstr (_, args, _) ->
+          List.iter iter_type args
+      | Tpoly (t, _) ->
+          iter_type t
+      | Tpackage { pack_constraints; _ } ->
+          List.iter (fun (_, t) -> iter_type t) pack_constraints
+      | Tobject (t, _) ->
+          iter_type t
+      | Tvariant row ->
+          Btype.iter_row iter_type row
+      | _ -> ()
+    end
+  in
+  List.iter iter_type param_tys;
+  !row_vars
+
+let finalize_ambient_scope env ?(param_tys=[]) scope =
+  let r = Types.effect_row_repr scope.amb_row in
+  if r.er_closed then
+    scope.amb_row
+  else
+    let param_row_vars = collect_row_variables param_tys in
+    let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
+    if TypeSet.mem more param_row_vars then
+      scope.amb_row
+    else begin
+      let closed_row = Btype.new_effect_row ~closed:true r.er_fields in
+      begin try
+        Ctype.unify_effect_rows env scope.amb_row closed_row
+      with Ctype.Unify _ -> ()
+      end;
+      scope.amb_row
+    end
+
+let current_body_effect = ref (None : Types.effect_row option)
+
 (* Collecting arguments for function applications. *)
 
 type untyped_apply_arg =
@@ -3143,7 +3242,8 @@ let remaining_function_type_for_error ty_ret rev_args =
         | Omitted { ty_arg; level } ->
             let ty_ret =
               newty2 ~level
-                (Tarrow (lbl, ty_arg, ty_ret, commu_ok))
+                (Tarrow (lbl, ty_arg, ty_ret, commu_ok,
+                         Btype.fresh_ambient_row_var ~level ()))
             in
             ty_ret)
     ty_ret rev_args
@@ -3318,11 +3418,14 @@ let collect_unknown_apply_args env funct ty_fun0 rev_args sargs =
                   then
                     Location.prerr_warning sarg.pexp_loc
                       Warnings.Ignored_extra_argument;
+                  let eff = Btype.fresh_ambient_row_var () in
                   unify env ty_fun
-                    (newty (Tarrow(lbl,ty_param,ty_res,commu_var ())));
+                    (newty (Tarrow(lbl,ty_param,ty_res,commu_var (), eff)));
+                  emit_ambient_effect env eff;
                   (`Arrow ty_arg, ty_res)
-              | Tarrow (l, ty_param, ty_res, _)
+              | Tarrow (l, ty_param, ty_res, _, eff)
                 when labels_match ~param:l ~arg:lbl ->
+                  emit_ambient_effect env eff;
                   (`Arrow (tpoly_get_mono ty_param), ty_res)
               | Tfunctor (l, id, pack, ty_res)
                 when labels_match ~param:l ~arg:lbl ->
@@ -3419,9 +3522,9 @@ let collect_apply_args env funct ignore_labels ty_fun ty_fun0 sargs =
     in
     let lopt =
       match get_desc ty_fun', get_desc (expand_head env ty_fun0) with
-      | Tarrow (l, ty_arg, ty_ret, com), Tarrow (_, ty_arg0, ty_ret0, _)
+      | Tarrow (l, ty_arg, ty_ret, com, eff), Tarrow (_, ty_arg0, ty_ret0, _, _)
         when is_commu_ok com ->
-          Some (l, `Arrow (ty_arg, ty_ret, ty_arg0, ty_ret0))
+          Some (l, `Arrow (ty_arg, ty_ret, ty_arg0, ty_ret0, eff))
       | Tfunctor (l, id, pack, ty), Tfunctor (_, id0, pack0, ty0) ->
           let tfun = { id_us = id; pack; ty} in
           let tfun0 = { id_us = id0; pack = pack0; ty = ty0} in
@@ -3483,7 +3586,9 @@ let collect_apply_args env funct ignore_labels ty_fun ty_fun0 sargs =
           collect_unknown_apply_args env funct ty_fun0 rev_args remaining_sargs
         else
         match arrow_kind with
-        | `Arrow (ty_arg, ty_ret, ty_arg0, ty_ret0) ->
+        | `Arrow (ty_arg, ty_ret, ty_arg0, ty_ret0, eff) ->
+            if Option.is_some arg_opt then
+              emit_ambient_effect env eff;
             let arg = collect_arrow_arg ~may_warn ~funct ~optional ~sargs
                                         ~ty_arg ~ty_arg0 ~lv arg_opt
             in
@@ -3529,7 +3634,8 @@ let type_omitted_parameters_and_build_result_type ty_ret args =
          | Omitted { ty_arg; level } ->
              let ty_ret =
                newty2 ~level
-                 (Tarrow ((lbl, ty_arg, ty_ret, commu_ok)))
+                 (Tarrow (lbl, ty_arg, ty_ret, commu_ok,
+                          Btype.fresh_ambient_row_var ~level ()))
              in
              let args = (lbl, Omitted ()) :: args in
              (ty_ret, args))
@@ -3721,7 +3827,7 @@ let loc_rest_of_function
 
 let rec approx_type env sty =
   match sty.ptyp_desc with
-  | Ptyp_arrow (p, ({ ptyp_desc = Ptyp_poly _ } as arg_sty), sty) ->
+  | Ptyp_arrow (p, ({ ptyp_desc = Ptyp_poly _ } as arg_sty), sty, _) ->
     if is_optional p then newvar ()
     else begin
       let arg_ty =
@@ -3730,11 +3836,13 @@ let rec approx_type env sty =
          unlike in the monomorphic case *)
         Typetexp.transl_simple_type env ~closed:false arg_sty
       in
-      newty (Tarrow (p, arg_ty.ctyp_type, approx_type env sty, commu_ok))
+      newty (Tarrow (p, arg_ty.ctyp_type, approx_type env sty, commu_ok,
+                     Btype.fresh_ambient_row_var ()))
     end
-  | Ptyp_arrow (p, _, sty) ->
+  | Ptyp_arrow (p, _, sty, _) ->
       let ty1 = if is_optional p then type_option (newvar ()) else newvar () in
-      newty (Tarrow (p, newmono ty1, approx_type env sty, commu_ok))
+      newty (Tarrow (p, newmono ty1, approx_type env sty, commu_ok,
+                     Btype.fresh_ambient_row_var ()))
   | Ptyp_tuple args ->
       newty (Ttuple (List.map (fun (l, t) -> l, approx_type env t) args))
   | Ptyp_constr (lid, ctl) ->
@@ -4265,18 +4373,17 @@ type apply_prim =
   | Revapply
 let check_apply_prim_type prim typ =
   match get_desc typ with
-  | Tarrow (Nolabel,a,b,_) when tpoly_is_mono a ->
+  | Tarrow (Nolabel,a,b,_,_) when tpoly_is_mono a ->
       let a = tpoly_get_mono a in
       begin match get_desc b with
-      | Tarrow(Nolabel,c,d,_) when tpoly_is_mono c ->
-          let c = tpoly_get_mono c in
+      | Tarrow(Nolabel,c,d,_,_) when tpoly_is_mono c ->
           let f, x, res =
             match prim with
             | Apply -> a, c, d
             | Revapply -> c, a, d
           in
           begin match get_desc f with
-          | Tarrow(Nolabel,fl,fr,_) when tpoly_is_mono fl  ->
+          | Tarrow(Nolabel,fl,fr,_,_) when tpoly_is_mono fl  ->
               let fl = tpoly_get_mono fl in
               is_Tvar fl && is_Tvar fr && is_Tvar x && is_Tvar res
               && Types.eq_type fl x && Types.eq_type fr res
@@ -4333,7 +4440,7 @@ let lower_args outer_level env ty_fun =
     let ty = expand_head env ty_fun in
     if TypeSet.mem ty seen then () else
       match get_desc ty with
-        Tarrow (_l, ty_arg, ty_fun, _com) ->
+        Tarrow (_l, ty_arg, ty_fun, _com, _) ->
           lower env ty_arg;
           lower_args env (TypeSet.add ty seen) ty_fun
       | Tfunctor (_,id,package,ty_fun) ->
@@ -4372,7 +4479,8 @@ let enforce_syntactic_arity ~loc env exp_type result_params body =
                       (arg_label,
                        newmono (newvar ()),
                        newvar (),
-                       commu_ok)));
+                       commu_ok,
+                       Btype.fresh_ambient_row_var ())));
               in
               (* We go to some trouble to try to generate a unification
                  error to help the error printing code's heuristic to
@@ -4757,6 +4865,24 @@ and type_expect_
             funct, sargs
       in
       let (args, ty_res) = type_application env loc funct sargs in
+      let () =
+        match funct.exp_desc with
+        | Texp_ident (_, _, {val_kind = Val_prim {Primitive.prim_name = "%perform"}; _}) ->
+            begin match args with
+            | [_, Arg arg] ->
+                let label =
+                  match arg.exp_desc with
+                  | Texp_construct (_, cdesc, _) -> cdesc.cstr_name
+                  | _ -> "Effect"
+                in
+                let eff_row =
+                  Btype.new_effect_row [label, Types.eff_present]
+                in
+                emit_ambient_effect env eff_row
+            | _ -> ()
+            end
+        | _ -> ()
+      in
       rue {
         exp_desc = Texp_apply(funct, args);
         exp_loc = loc; exp_extra = [];
@@ -5500,15 +5626,18 @@ and type_expect_
           let spat_params, ty_params = loop slet.pbop_pat (newvar ()) sands in
           let ty_func_result = newvar () in
           let ty_func =
-            newty (Tarrow(Nolabel, newmono ty_params, ty_func_result, commu_ok))
+            newty (Tarrow(Nolabel, newmono ty_params, ty_func_result, commu_ok,
+                          Btype.fresh_ambient_row_var ()))
           in
           let ty_result = newvar () in
           let ty_andops = newvar () in
           let ty_op =
             let ty_fun =
-              newty (Tarrow(Nolabel, newmono ty_func, ty_result, commu_ok))
+              newty (Tarrow(Nolabel, newmono ty_func, ty_result, commu_ok,
+                            Btype.fresh_ambient_row_var ()))
             in
-            newty (Tarrow(Nolabel, newmono ty_andops, ty_fun, commu_ok))
+            newty (Tarrow(Nolabel, newmono ty_andops, ty_fun, commu_ok,
+                          Btype.fresh_ambient_row_var ()))
           in
           begin try
             unify env op_type ty_op
@@ -5937,6 +6066,7 @@ and split_function_mty env ty_expected ~arg_label ~first ~in_function =
        [Tfunction_cases]).
 *)
 and type_function
+      ?(param_tys = [])
       env params_suffix body_constraint body ty_expected ~first ~in_function
   =
   let ty_fun, (loc_function : Location.t) = in_function in
@@ -5956,7 +6086,7 @@ and type_function
             (* mimic the typing of Pexp_newtype by minting a new type var,
               like [type_exp].
             *)
-            type_function env rest body_constraint body (newvar ())
+            type_function ~param_tys env rest body_constraint body (newvar ())
               ~first:false ~in_function
           in
           (params, body, newtypes, contains_gadt), exp_type)
@@ -5979,7 +6109,7 @@ and type_function
             ({txt = name; loc}, pack_param)
         | _ -> assert false
       in
-      type_moddep_fun ~env ~name ~pack_param ~rest ~arg_label ~first
+      type_moddep_fun ~param_tys ~env ~name ~pack_param ~rest ~arg_label ~first
         ~in_function ~ty_expected ~pparam_loc ~loc ~body_constraint ~body
   | { pparam_desc = Pparam_val (arg_label, default_arg, pat); pparam_loc }
       :: rest
@@ -6027,7 +6157,7 @@ and type_function
             fun () pat ~when_env:_ ~ext_env ~cont:_ ~ty_expected ~ty_infer:_
               ~contains_gadt:param_contains_gadt ->
               let _, params, body, newtypes, suffix_contains_gadt =
-                type_function ext_env rest body_constraint body
+                type_function ~param_tys:(ty_arg_mono :: param_tys) ext_env rest body_constraint body
                   ty_expected ~first:false ~in_function
               in
               let contains_gadt =
@@ -6044,8 +6174,16 @@ and type_function
            | [ result ], partial -> result, partial
            | ([] | _ :: _ :: _), _ -> assert false
       in
+      let eff =
+        if rest = [] then
+          match !current_body_effect with
+          | Some e -> current_body_effect := None; e
+          | None -> Btype.empty_pure_row ()
+        else
+          Btype.empty_pure_row ()
+      in
       let exp_type =
-        instance (newgenty (Tarrow (arg_label, ty_param, ty_ret, commu_ok)))
+        instance (newgenty (Tarrow (arg_label, ty_param, ty_ret, commu_ok, eff)))
       in
       (* This is quadratic, as it operates over the entire tail of the
          type for each new parameter. Now that functions are n-ary, we
@@ -6131,76 +6269,84 @@ and type_function
       in
       exp_type, param :: params, body, [], contains_gadt
   | [] ->
+    let scope = push_ambient_scope () in
     let exp_type, body =
-      match body with
-      | Pfunction_body body ->
-          let body =
-            match body_constraint with
-            | None -> type_expect env body (mk_expected ty_expected)
-            | Some constraint_ ->
-                let body_loc = body.pexp_loc in
-                let body, exp_type, exp_extra =
-                  type_constraint_expect (expression_constraint body)
-                    env body_loc ~loc_arg:body_loc constraint_ ty_expected
-                in
-                { body with
-                    exp_extra = (exp_extra, body_loc, []) :: body.exp_extra;
-                    exp_type;
-                }
-          in
-          body.exp_type, Tfunction_body body
-      | Pfunction_cases (cases, _, attributes) ->
-          let type_cases_expect env ty_expected =
-            type_function_cases_expect
-              env ty_expected loc cases attributes ~first ~in_function
-          in
-          let (cases, partial, exp_type), exp_extra =
-            match body_constraint with
-            | None -> type_cases_expect env ty_expected, None
-            | Some constraint_ ->
-              (* The typing of function case coercions/constraints is
-                  analogous to the typing of expression coercions/constraints.
+      try
+        match body with
+        | Pfunction_body body ->
+            let body =
+              match body_constraint with
+              | None -> type_expect env body (mk_expected ty_expected)
+              | Some constraint_ ->
+                  let body_loc = body.pexp_loc in
+                  let body, exp_type, exp_extra =
+                    type_constraint_expect (expression_constraint body)
+                      env body_loc ~loc_arg:body_loc constraint_ ty_expected
+                  in
+                  { body with
+                      exp_extra = (exp_extra, body_loc, []) :: body.exp_extra;
+                      exp_type;
+                  }
+            in
+            body.exp_type, Tfunction_body body
+        | Pfunction_cases (cases, _, attributes) ->
+            let type_cases_expect env ty_expected =
+              type_function_cases_expect
+                env ty_expected loc cases attributes ~first ~in_function
+            in
+            let (cases, partial, exp_type), exp_extra =
+              match body_constraint with
+              | None -> type_cases_expect env ty_expected, None
+              | Some constraint_ ->
+                (* The typing of function case coercions/constraints is
+                    analogous to the typing of expression coercions/constraints.
 
-                  - [type_with_constraint]: If there is a constraint, then call
-                    [type_argument] on the cases, and discard the cases'
-                    inferred type in favor of the constrained type. (Function
-                    cases aren't inferred, so [type_argument] would just call
-                    [type_expect] straight away, so we do the same here.)
-                  - [type_without_constraint]: If there is just a coercion and
-                    no constraint, call [type_exp] on the cases and surface the
-                    cases' inferred type to [type_constraint_expect]. *)
-              let function_cases_constraint_arg =
-                { is_self = (fun _ -> false);
-                  type_with_constraint = (fun env ty ->
-                    let cases, partial, _ = type_cases_expect env ty in
-                    cases, partial);
-                  type_without_constraint = (fun env ->
-                    let cases, partial, ty_fun =
-                      (* The analogy to [type_exp] for expressions. *)
-                      type_cases_expect env (newvar ())
-                    in
-                    (cases, partial), ty_fun);
-                }
-              in
-              let (cases, partial), exp_type, exp_extra =
-                type_constraint_expect function_cases_constraint_arg
-                  env loc constraint_ ty_expected ~loc_arg:loc
-              in
-              (cases, partial, exp_type), Some exp_extra
-          in
-          let param = name_cases "param" cases in
-          let body =
-            Tfunction_cases
-              { cases; partial; param; loc; exp_extra; attributes }
-          in
-          exp_type, body
+                    - [type_with_constraint]: If there is a constraint, then call
+                      [type_argument] on the cases, and discard the cases'
+                      inferred type in favor of the constrained type. (Function
+                      cases aren't inferred, so [type_argument] would just call
+                      [type_expect] straight away, so we do the same here.)
+                    - [type_without_constraint]: If there is just a coercion and
+                      no constraint, call [type_exp] on the cases and surface the
+                      cases' inferred type to [type_constraint_expect]. *)
+                let function_cases_constraint_arg =
+                  { is_self = (fun _ -> false);
+                    type_with_constraint = (fun env ty ->
+                      let cases, partial, _ = type_cases_expect env ty in
+                      cases, partial);
+                    type_without_constraint = (fun env ->
+                      let cases, partial, ty_fun =
+                        (* The analogy to [type_exp] for expressions. *)
+                        type_cases_expect env (newvar ())
+                      in
+                      (cases, partial), ty_fun);
+                  }
+                in
+                let (cases, partial), exp_type, exp_extra =
+                  type_constraint_expect function_cases_constraint_arg
+                    env loc constraint_ ty_expected ~loc_arg:loc
+                in
+                (cases, partial, exp_type), Some exp_extra
+            in
+            let param = name_cases "param" cases in
+            let body =
+              Tfunction_cases
+                { cases; partial; param; loc; exp_extra; attributes }
+            in
+            exp_type, body
+      with exn ->
+        ignore (pop_ambient_scope ());
+        raise exn
      in
+     ignore (pop_ambient_scope ());
+     let eff = finalize_ambient_scope env ~param_tys scope in
+     current_body_effect := Some eff;
      (* [No_gadt] is fine because this return value is only meant to indicate
         whether [params] (here, the empty list) contains any GADT, not whether
         the body is a [Tfunction_cases] whose patterns include a GADT.
      *)
-    exp_type, [], body, [], No_gadt
-and type_moddep_fun ~env ~name ~pack_param ~rest ~arg_label ~first
+     exp_type, [], body, [], No_gadt
+and type_moddep_fun ~param_tys ~env ~name ~pack_param ~rest ~arg_label ~first
     ~in_function ~ty_expected ~pparam_loc ~loc ~body_constraint ~body =
   let type_pack pack =
     let pack = Ast_helper.Typ.package ~loc:pack.ppt_loc pack in
@@ -6257,7 +6403,7 @@ and type_moddep_fun ~env ~name ~pack_param ~rest ~arg_label ~first
                             ~p_out:(Pident s_ident) ~fixed:false ety)
         | None -> newvar ()
       in
-      type_function new_env rest body_constraint body
+      type_function ~param_tys new_env rest body_constraint body
           expected_res ~first:false ~in_function,
       s_ident
   end
@@ -6272,7 +6418,8 @@ and type_moddep_fun ~env ~name ~pack_param ~rest ~arg_label ~first
         Btype.newgenty (Tfunctor (arg_label, ident, pack, res_ty))
     | None ->
         let pck_ty = newgenmono (newgenty (Tpackage pack)) in
-        newgenty (Tarrow (arg_label, pck_ty, res_ty, commu_ok))
+        newgenty (Tarrow (arg_label, pck_ty, res_ty, commu_ok,
+                          Btype.fresh_ambient_row_var ()))
   in
   let _ =
     try
@@ -6658,7 +6805,7 @@ and type_argument_ ?explanation ?recarg env sarg ty_expected' ty_expected =
     let work () =
       let te = expand_head env ty_expected' in
       match get_desc te with
-        Tarrow(Nolabel,_,ty_res0,_) ->
+        Tarrow(Nolabel,_,ty_res0,_,_) ->
           Some (no_labels ty_res0, get_level te)
       | _ -> None
     in
@@ -6678,12 +6825,12 @@ and type_argument_ ?explanation ?recarg env sarg ty_expected' ty_expected =
       in
       let rec make_args args ty_fun =
         match get_desc (expand_head env ty_fun) with
-        | Tarrow (l,ty_arg,ty_fun,_) when is_optional l ->
+        | Tarrow (l,ty_arg,ty_fun,_,_) when is_optional l ->
             let ty =
               option_none env (instance (tpoly_get_mono ty_arg)) sarg.pexp_loc
             in
             make_args ((l, Arg ty) :: args) ty_fun
-        | Tarrow (l,_,ty_res',_) when l = Nolabel || !Clflags.classic ->
+        | Tarrow (l,_,ty_res',_,_) when l = Nolabel || !Clflags.classic ->
             List.rev args, ty_fun, no_labels ty_res'
         | Tvar _ ->  List.rev args, ty_fun, false
         |  _ -> [], texp.exp_type, false
@@ -6699,7 +6846,7 @@ and type_argument_ ?explanation ?recarg env sarg ty_expected' ty_expected =
       and ty_fun = instance ty_fun' in
       let ty_arg, ty_res =
         match get_desc (expand_head env ty_expected) with
-          Tarrow(Nolabel,ty_arg,ty_res,_) -> ty_arg, ty_res
+          Tarrow(Nolabel,ty_arg,ty_res,_,_) -> ty_arg, ty_res
         | _ -> assert false
       in
       unify_exp ~sexp:sarg env {texp with exp_type = ty_fun} ty_expected;
@@ -7392,12 +7539,19 @@ and type_function_cases_expect
       split_function_ty env ty_expected ~arg_label:Nolabel
         ~first ~in_function ~has_poly:false
     in
+    let scope = push_ambient_scope () in
     let cases, partial =
-      type_cases Value env ty_arg_mono (mk_expected ty_ret)
-        ~check_if_total:true loc cases
+      try
+        type_cases Value env ty_arg_mono (mk_expected ty_ret)
+          ~check_if_total:true loc cases
+      with exn ->
+        ignore (pop_ambient_scope ());
+        raise exn
     in
+    ignore (pop_ambient_scope ());
+    let eff = finalize_ambient_scope env ~param_tys:[ty_arg_mono] scope in
     let ty_fun =
-      instance (newgenty (Tarrow (Nolabel, ty_param, ty_ret, commu_ok)))
+      instance (newgenty (Tarrow (Nolabel, ty_param, ty_ret, commu_ok, eff)))
     in
     try
       unify_exp_types loc env ty_fun (instance ty_expected);
@@ -7834,9 +7988,11 @@ and type_andops env sarg sands expected_ty =
             let ty_rest = newvar () in
             let ty_result = newvar() in
             let ty_rest_fun =
-              newty (Tarrow(Nolabel, newmono ty_arg, ty_result, commu_ok)) in
+              newty (Tarrow(Nolabel, newmono ty_arg, ty_result, commu_ok,
+                            Btype.fresh_ambient_row_var ())) in
             let ty_op =
-              newty (Tarrow(Nolabel, newmono ty_rest, ty_rest_fun, commu_ok)) in
+              newty (Tarrow(Nolabel, newmono ty_rest, ty_rest_fun, commu_ok,
+                            Btype.fresh_ambient_row_var ())) in
             begin try
               unify env op_type ty_op
             with Unify err ->

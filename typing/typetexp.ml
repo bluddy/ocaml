@@ -102,6 +102,7 @@ module TyVarEnv : sig
   (* see mli file *)
 
   type policy
+  val is_fixed : policy -> bool
   val fixed_policy : policy (* no wildcards allowed *)
   val extensible_policy : policy (* common case *)
   val univars_policy : policy (* fresh variables are univars (in methods) *)
@@ -326,6 +327,7 @@ end = struct
   let fixed_policy = { flavor = Unification; extensibility = Fixed }
   let extensible_policy = { flavor = Unification; extensibility = Extensible }
   let univars_policy = { flavor = Universal; extensibility = Extensible }
+  let is_fixed { extensibility } = extensibility = Fixed
 
   let add_pre_univar tv = function
     | { flavor = Universal } ->
@@ -466,10 +468,49 @@ let type_open :
     ref =
   ref (fun ?used_slot:_ _ -> assert false)
 
-let rec transl_type env ~policy ?(aliased=false) ~row_context styp =
+let rec contains_arrow env styp =
+  match styp.Parsetree.ptyp_desc with
+  | Ptyp_arrow _ -> true
+  | Ptyp_tuple stl ->
+      List.exists (fun (_, t) -> contains_arrow env t) stl
+  | Ptyp_poly (_, t) | Ptyp_alias (t, _) -> contains_arrow env t
+  | Ptyp_constr (lid, _) ->
+      begin try
+        let (_, decl) = Env.find_type_by_name lid.txt env in
+        match decl.type_manifest with
+        | Some ty ->
+            begin match get_desc ty with
+            | Tarrow _ -> true
+            | _ -> false
+            end
+        | None -> false
+      with Not_found -> false
+      end
+  | _ -> false
+
+let rec arrow_spine_has_callback env styp =
+  match styp.Parsetree.ptyp_desc with
+  | Ptyp_arrow (_, st1, st2, _) ->
+      contains_arrow env st1 || arrow_spine_has_callback env st2
+  | Ptyp_poly (_, t) | Ptyp_alias (t, _) -> arrow_spine_has_callback env t
+  | Ptyp_constr (lid, _) ->
+      begin try
+        let (_, decl) = Env.find_type_by_name lid.txt env in
+        match decl.type_manifest with
+        | Some ty ->
+            begin match get_desc ty with
+            | Tarrow _ -> true
+            | _ -> false
+            end
+        | None -> false
+      with Not_found -> false
+      end
+  | _ -> false
+
+let rec transl_type env ~policy ?(aliased=false) ?(allow_open_arrow=true) ?(ambient_row=None) ?(in_callback=false) ~row_context styp =
   let delayed () =
     Builtin_attributes.warning_scope styp.ptyp_attributes
-      (fun () -> transl_type_aux env ~policy ~aliased ~row_context styp)
+      (fun () -> transl_type_aux env ~policy ~aliased ~allow_open_arrow ~ambient_row ~in_callback ~row_context styp)
   in
   if !Clflags.typing_recovery then
     Typing_recovery_state.with_saved_types (fun () ->
@@ -487,7 +528,7 @@ let rec transl_type env ~policy ?(aliased=false) ~row_context styp =
           })
   else delayed ()
 
-and transl_type_aux env ~row_context ~aliased ~policy styp =
+and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?(ambient_row=None) ?(in_callback=false) styp =
   let loc = styp.ptyp_loc in
   let ctyp ctyp_desc ctyp_type =
     { ctyp_desc; ctyp_type; ctyp_env = env;
@@ -509,9 +550,20 @@ and transl_type_aux env ~row_context ~aliased ~policy styp =
       end
     in
     ctyp (Ttyp_var name) ty
-  | Ptyp_arrow(l, st1, st2) ->
-    let arg_cty = transl_type env ~policy ~row_context st1 in
-    let ret_cty = transl_type env ~policy ~row_context st2 in
+  | Ptyp_arrow(l, st1, st2, eff_opt) ->
+    let amb =
+      match ambient_row with
+      | Some _ as a -> a
+      | None ->
+          if allow_open_arrow && not (TyVarEnv.is_fixed policy) &&
+             (contains_arrow env st1 || arrow_spine_has_callback env st2)
+          then
+            Some (Btype.fresh_ambient_row_var ())
+          else
+            None
+    in
+    let arg_cty = transl_type env ~policy ~allow_open_arrow:true ~ambient_row:amb ~in_callback:true ~row_context st1 in
+    let ret_cty = transl_type env ~policy ~allow_open_arrow:true ~ambient_row:amb ~in_callback ~row_context st2 in
     let arg_ty = arg_cty.ctyp_type in
     let arg_ty =
       if Btype.is_Tpoly arg_ty then arg_ty else newmono arg_ty
@@ -526,14 +578,64 @@ and transl_type_aux env ~row_context ~aliased ~policy styp =
             (newconstr Predef.path_option [Btype.tpoly_get_mono arg_ty])
         end
     in
-    let ty = newty (Tarrow(l, arg_ty, ret_cty.ctyp_type, commu_ok)) in
+    let is_ret_arrow =
+      match get_desc (Ctype.expand_head env ret_cty.ctyp_type) with
+      | Tarrow _ -> true
+      | _ -> false
+    in
+    let eff =
+      match eff_opt with
+      | None ->
+          begin match amb with
+          | Some r ->
+              if in_callback || not is_ret_arrow then r
+              else Btype.empty_pure_row ()
+          | None ->
+              Btype.empty_pure_row ()
+          end
+      | Some row ->
+          if row.erow_closed && row.erow_labels = [] then
+            Btype.empty_pure_row ()
+          else
+            let fields =
+              List.map (fun (lbl_loc, flag) ->
+                let f = match flag with
+                  | Parsetree.F_Present -> Types.eff_present
+                  | Parsetree.F_Absent -> Types.eff_absent
+                  | Parsetree.F_Var _ -> Types.eff_var ()
+                in
+                lbl_loc.Location.txt, f
+              ) row.erow_labels
+            in
+            let more =
+              match row.erow_tail with
+              | Some tail_loc ->
+                  let name = tail_loc.Location.txt in
+                  check_tyvar_name env tail_loc.loc name;
+                  begin try
+                    TyVarEnv.lookup_local ~row_context:row_context name
+                  with Not_found ->
+                    let v = TyVarEnv.new_var ~name policy in
+                    TyVarEnv.remember_used name v tail_loc.loc;
+                    v
+                  end
+              | None ->
+                  if row.erow_closed then
+                    Btype.newgenty Tnil
+                  else
+                    newvar ()
+            in
+            Types.create_effect_row ~fields ~more ~closed:row.erow_closed
+    in
+    let ty = newty (Tarrow(l, arg_ty, ret_cty.ctyp_type, commu_ok, eff)) in
     ctyp (Ttyp_arrow (l, arg_cty, ret_cty)) ty
   | Ptyp_tuple stl ->
     assert (List.length stl >= 2);
     Option.iter (fun l -> Error.log_and_raise loc env (Repeated_tuple_label l))
       (Misc.repeated_label stl);
+    let in_cb = in_callback || ambient_row <> None in
     let ctys =
-      List.map (fun (l, t) -> l, transl_type env ~policy ~row_context t) stl
+      List.map (fun (l, t) -> l, transl_type env ~policy ~allow_open_arrow:true ~ambient_row ~in_callback:in_cb ~row_context t) stl
     in
     let ty =
       newty (Ttuple (List.map (fun (l, ctyp) -> l, ctyp.ctyp_type) ctys))
@@ -550,7 +652,7 @@ and transl_type_aux env ~row_context ~aliased ~policy styp =
       if List.length stl <> decl.type_arity then
         Error.log_and_raise styp.ptyp_loc env
           (Type_arity_mismatch(lid.txt, decl.type_arity, List.length stl));
-      let args = List.map (transl_type env ~policy ~row_context) stl in
+      let args = List.map (transl_type env ~policy ~allow_open_arrow:false ~row_context) stl in
       let params = instance_list decl.type_params in
       let unify_param =
         match decl.type_manifest with
@@ -667,7 +769,7 @@ and transl_type_aux env ~row_context ~aliased ~policy styp =
             name := None;
             let tl =
               Builtin_attributes.warning_scope rf_attributes
-                (fun () -> List.map (transl_type env ~policy ~row_context) stl)
+                (fun () -> List.map (transl_type env ~policy ~allow_open_arrow:false ~row_context) stl)
             in
             let f = match present with
               Some present when not (List.mem l.txt present) ->
@@ -683,7 +785,7 @@ and transl_type_aux env ~row_context ~aliased ~policy styp =
             add_typed_field styp.ptyp_loc l.txt f;
               Ttag (l,c,tl)
         | Rinherit sty ->
-            let cty = transl_type env ~policy ~row_context sty in
+            let cty = transl_type env ~policy ~allow_open_arrow:false ~row_context sty in
             let ty = cty.ctyp_type in
             let nm =
               match get_desc cty.ctyp_type with

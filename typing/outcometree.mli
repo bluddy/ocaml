@@ -68,7 +68,7 @@ type out_type =
   | Otyp_abstract
   | Otyp_open
   | Otyp_alias of {non_gen:bool; aliased:out_type; alias:string}
-  | Otyp_arrow of Asttypes.arg_label * out_type * out_type
+  | Otyp_arrow of Asttypes.arg_label * out_type * out_type * out_effect_row option
   | Otyp_class of out_ident * out_type list
   | Otyp_constr of out_ident * out_type list
   | Otyp_manifest of out_type * out_type
@@ -84,6 +84,17 @@ type out_type =
   | Otyp_attribute of out_type * out_attribute
   | Otyp_external of string
   | Otyp_functor of Asttypes.arg_label * out_ident * out_package * out_type
+
+and out_effect_row = {
+  oer_labels: (string * out_presence_flag) list;
+  oer_tail: string option;
+  oer_closed: bool;
+}
+
+and out_presence_flag =
+  | OF_Present
+  | OF_Absent
+  | OF_Var of string
 
 and out_row =
   | Orow_closed

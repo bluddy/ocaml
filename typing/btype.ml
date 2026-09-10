@@ -331,11 +331,45 @@ let fold_row f init row =
 let iter_row f row =
   fold_row (fun () v -> f v) () row
 
+(**** Operations on effect rows ****)
+
+let fold_effect_row f init row =
+  let r = effect_row_repr row in
+  f init r.er_more
+
+let iter_effect_row f row =
+  fold_effect_row (fun () v -> f v) () row
+
+let empty_pure_row () =
+  create_effect_row
+    ~fields:[]
+    ~more:(newty3 ~level:generic_level ~scope:0 Tnil)
+    ~closed:true
+
+let fresh_ambient_row_var ?level () =
+  let v = match level with None -> newgenvar () | Some lvl -> newty2 ~level:lvl (Tvar None) in
+  create_effect_row
+    ~fields:[]
+    ~more:v
+    ~closed:false
+
+let new_effect_row ?(closed=false) ?level fields =
+  let more =
+    if closed then newty3 ~level:generic_level ~scope:0 Tnil
+    else match level with None -> newgenvar () | Some lvl -> newty2 ~level:lvl (Tvar None)
+  in
+  create_effect_row ~fields ~more ~closed
+
 let fold_type_desc f init = function
     Tvar _              -> init
-  | Tarrow (_, ty1, ty2, _) ->
+  | Tarrow (_, ty1, ty2, _, eff) ->
       let result = f init ty1 in
-      f result ty2
+      let result = f result ty2 in
+      let r = effect_row_repr eff in
+      f result r.er_more
+  | Teffect_row eff ->
+      let r = effect_row_repr eff in
+      f init r.er_more
   | Ttuple l            -> List.fold_left (fun acc (_, t) -> f acc t) init l
   | Tconstr (_, l, _)   -> List.fold_left f init l
   | Tobject(ty, {contents = Some (_, p)}) ->
@@ -565,11 +599,27 @@ let copy_row f fixed row keep more =
   let fixed = if fixed then orig_fixed else None in
   create_row ~fields ~more ~fixed ~closed ~name
 
+let copy_effect_flag keep flag =
+  match effect_flag_repr flag with
+  | EF_present -> eff_present
+  | EF_absent -> eff_absent
+  | EF_var ->
+      if keep then flag else eff_var ()
+
+let copy_effect_row f row =
+  let r = effect_row_repr row in
+  create_effect_row
+    ~fields:(List.map (fun (l, flag) -> l, copy_effect_flag false flag) r.er_fields)
+    ~more:(f r.er_more)
+    ~closed:r.er_closed
+
 let copy_commu c = if is_commu_ok c then commu_ok else commu_var ()
 
 let copy_type_desc ?(keep_names=false) f = function
     Tvar _ as ty        -> if keep_names then ty else Tvar None
-  | Tarrow (p, ty1, ty2, c)-> Tarrow (p, f ty1, f ty2, copy_commu c)
+  | Tarrow (p, ty1, ty2, c, eff) ->
+      Tarrow (p, f ty1, f ty2, copy_commu c, copy_effect_row f eff)
+  | Teffect_row eff     -> Teffect_row (copy_effect_row f eff)
   | Ttuple l            -> Ttuple (List.map (fun (label, t) -> label, f t) l)
   | Tconstr (p, l, _)   -> Tconstr (p, List.map f l, ref Mnil)
   | Tobject(ty, {contents = Some (p, tl)})

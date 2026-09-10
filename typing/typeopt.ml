@@ -45,7 +45,7 @@ let scrape env ty =
 
 let is_function_type env ty =
   match scrape env ty with
-  | Some (Tarrow (_, lhs, rhs, _)) -> Some (lhs, rhs)
+  | Some (Tarrow (_, lhs, rhs, _, _)) -> Some (lhs, rhs)
   | _ -> None
 
 let is_base_type env ty base_ty_path =
@@ -111,7 +111,7 @@ let classify env ty : classification =
           Any
       end
   | Tarrow _ | Ttuple _ | Tpackage _ | Tobject _
-  | Tnil | Tvariant _ | Tfunctor _ -> Addr
+  | Tnil | Tvariant _ | Tfunctor _ | Teffect_row _ -> Addr
   | Tlink _ | Tsubst _ | Texpand _ | Tpoly _ | Tfield _ ->
       assert false
 

@@ -137,8 +137,9 @@ let rec immediate_subtypes : type_expr -> type_expr list = fun ty ->
   match get_desc ty with
   (* these are the important cases,
      on which immediate_subtypes is called from [check_type] *)
-  | Tarrow(_,ty1,ty2,_) ->
+  | Tarrow(_,ty1,ty2,_,_) ->
       [ty1; ty2]
+  | Teffect_row _ -> []
   | Ttuple(tys) -> List.map snd tys
   | Tpackage pack -> (snd (List.split pack.pack_constraints))
   | Tobject(row,class_ty) ->
@@ -423,14 +424,16 @@ let check_type
     | (Tobject(_,_)       , Sep    )
     | ((Tnil | Tfield _)  , Sep    )
     | (Tfunctor _         , Sep    )
-    | (Tpackage _         , Sep    ) -> empty
+    | (Tpackage _         , Sep    )
+    | (Teffect_row _      , Sep    ) -> empty
     (* "Deeply separable" case for these same constructors. *)
     | (Tarrow _           , Deepsep)
     | (Ttuple _           , Deepsep)
     | (Tvariant(_)        , Deepsep)
     | (Tobject(_,_)       , Deepsep)
     | ((Tnil | Tfield _)  , Deepsep)
-    | (Tpackage _         , Deepsep) ->
+    | (Tpackage _         , Deepsep)
+    | (Teffect_row _      , Deepsep) ->
         let tys = immediate_subtypes ty in
         let on_subtype context ty =
           context ++ check_type env (Hyps.guard hyps) ty Deepsep in

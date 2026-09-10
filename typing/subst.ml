@@ -227,7 +227,8 @@ let apply_type_function params args body =
           Transient_expr.set_stub_desc t desc';
           t
       | ( Tvar _ | Tarrow _ | Ttuple _ | Tfield _ | Tnil | Tlink _ | Tunivar _
-        | Tpoly _ | Tconstr _ | Tobject _ | Tpackage _ | Texpand _ ) as desc ->
+        | Tpoly _ | Tconstr _ | Tobject _ | Tpackage _ | Texpand _
+        | Teffect_row _ ) as desc ->
           let t = newgenstub ~scope:(get_scope ty) in
           For_copy.redirect_desc copy_scope ty (Tsubst (t, None));
           let desc' = copy_type_desc copy desc in
@@ -350,7 +351,7 @@ let rec typexp copy_scope s ty =
       | Tfield(_label, kind, _t1, t2) when field_kind_repr kind = Fabsent ->
           Tlink (typexp copy_scope s t2)
       | Tvar _ | Tarrow _ | Ttuple _ | Tfield _ | Tnil | Tlink _
-      | Tunivar _ | Tpoly _ | Tsubst _ | Texpand _ ->
+      | Tunivar _ | Tpoly _ | Tsubst _ | Texpand _ | Teffect_row _ ->
           copy_type_desc (typexp copy_scope s) desc
     in
     Transient_expr.set_stub_desc ty' desc';

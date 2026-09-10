@@ -210,7 +210,8 @@ let rec constructor_type constr cty =
       constr
   | Cty_arrow (l, ty, cty) ->
       let ty = Ctype.newmono ty in
-      Ctype.newty (Tarrow (l, ty, constructor_type constr cty, commu_ok))
+      Ctype.newty (Tarrow (l, ty, constructor_type constr cty, commu_ok,
+                           Btype.fresh_ambient_row_var ()))
 
 let add_dummy_method env final ~scope sign =
   match final with
@@ -940,7 +941,8 @@ and class_field_second_pass cl_num sign met_env field =
            let self_param_type = Btype.newgenmono sign.Types.csig_self in
            let meth_type =
              mk_expected
-               (Btype.newgenty (Tarrow(Nolabel, self_param_type, ty, commu_ok)))
+               (Btype.newgenty (Tarrow(Nolabel, self_param_type, ty, commu_ok,
+                                       Btype.fresh_ambient_row_var ())))
            in
            let texp =
              Ctype.with_raised_nongen_level
@@ -958,7 +960,8 @@ and class_field_second_pass cl_num sign met_env field =
            let self_param_type = Ctype.newmono sign.Types.csig_self in
            let meth_type =
              mk_expected (Ctype.newty
-              (Tarrow (Nolabel, self_param_type, unit_type, commu_ok)))
+              (Tarrow (Nolabel, self_param_type, unit_type, commu_ok,
+                       Btype.fresh_ambient_row_var ())))
            in
            let texp =
              Ctype.with_raised_nongen_level
@@ -1478,7 +1481,8 @@ let rec approx_declaration cl =
         if Btype.is_optional l then Ctype.instance var_option
         else Ctype.newvar () in
       let arg = Ctype.newmono arg in
-      Ctype.newty (Tarrow (l, arg, approx_declaration cl, commu_ok))
+      Ctype.newty (Tarrow (l, arg, approx_declaration cl, commu_ok,
+                           Btype.fresh_ambient_row_var ()))
   | Pcl_let (_, _, cl) ->
       approx_declaration cl
   | Pcl_constraint (cl, _) ->
@@ -1492,7 +1496,8 @@ let rec approx_description ct =
         if Btype.is_optional l then Ctype.instance var_option
         else Ctype.newvar () in
       let arg = Ctype.newmono arg in
-      Ctype.newty (Tarrow (l, arg, approx_description ct, commu_ok))
+      Ctype.newty (Tarrow (l, arg, approx_description ct, commu_ok,
+                           Btype.fresh_ambient_row_var ()))
   | _ -> Ctype.newvar ()
 
 (*******************************)

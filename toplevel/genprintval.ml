@@ -312,7 +312,7 @@ module Make(O : OBJ)(EVP : EVALPATH with type valu = O.t) = struct
           match Btype.get_constr_desc ty with
           | Tvar _ | Tunivar _ ->
               Oval_stuff "<poly>"
-          | Tarrow _ | Tfunctor _ ->
+          | Tarrow _ | Tfunctor _ | Teffect_row _ ->
               Oval_stuff "<fun>"
           | Ttuple(labeled_tys) ->
               Oval_tuple (tree_of_labeled_val_list 0 depth obj labeled_tys)

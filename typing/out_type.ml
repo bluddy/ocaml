@@ -1040,7 +1040,7 @@ module Aliases = struct
       | Tpoly(ty, tyl) ->
           List.iter add tyl;
           mark_loops_rec visited ty
-      | Tarrow (Optional _, e1, e2, _) ->
+      | Tarrow (Optional _, e1, e2, _, _) ->
           begin match get_desc e1 with
           | Tpoly (a, []) ->
               begin match get_desc a with
@@ -1137,7 +1137,7 @@ let rec tree_of_typexp mode ty =
         let non_gen = is_non_gen mode ty in
         let name_gen = Variable_names.new_var_name ~non_gen ty in
         Otyp_var (non_gen, Variable_names.name_of_type name_gen tty)
-    | Tarrow(l, ty1, ty2, _) ->
+    | Tarrow(l, ty1, ty2, _, eff) ->
         let lab =
           if !print_labels || is_optional l then l else Nolabel
         in
@@ -1157,7 +1157,37 @@ let rec tree_of_typexp mode ty =
               | _ -> Otyp_stuff "<hidden>"
             else Otyp_stuff "<hidden>"
           else tree_of_typexp mode ty1 in
-        Otyp_arrow (lab, t1, tree_of_typexp mode ty2)
+        let eff_out =
+          if is_pure_effect_row eff then
+            Some { oer_labels = []; oer_tail = None; oer_closed = true }
+          else
+            let r = effect_row_repr eff in
+            if r.er_fields = [] && not r.er_closed then
+              match printer_get_desc r.er_more with
+              | Tvar (Some name) ->
+                  Some { oer_labels = []; oer_tail = Some name; oer_closed = false }
+              | _ -> None
+            else
+              let tail =
+                if r.er_closed then None
+                else match printer_get_desc r.er_more with
+                  | Tvar (Some name) -> Some name
+                  | _ -> None
+              in
+              let labels =
+                List.map (fun (lbl, flag) ->
+                  let f = match effect_flag_repr flag with
+                    | EF_present -> OF_Present
+                    | EF_absent -> OF_Absent
+                    | EF_var -> OF_Present
+                  in
+                  (lbl, f)) r.er_fields
+              in
+              Some { oer_labels = labels; oer_tail = tail; oer_closed = r.er_closed }
+        in
+        Otyp_arrow (lab, t1, tree_of_typexp mode ty2, eff_out)
+    | Teffect_row _ ->
+        Otyp_stuff "<eff>"
     | Tfunctor (l, id, pack, ty) ->
         let lab =
           if !print_labels || is_optional l then l else Nolabel

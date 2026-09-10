@@ -154,6 +154,12 @@ val merge_row_fields:
 val filter_row_fields:
         bool -> (label * row_field) list -> (label * row_field) list
 
+val sort_effect_row_fields: (label * effect_flag) list -> (label * effect_flag) list
+val merge_effect_row_fields:
+        (label * effect_flag) list -> (label * effect_flag) list ->
+        (label * effect_flag) list * (label * effect_flag) list *
+        (label * effect_flag * effect_flag) list
+
 val lower_contravariant: Env.t -> type_expr -> unit
         (* Lower level of type variables inside contravariant branches;
            to be used before generalize for expansive expressions *)
@@ -334,6 +340,8 @@ val get_new_abstract_name : Env.t -> string -> string
 
 val unify: Env.t -> type_expr -> type_expr -> unit
         (* Unify the two types given. Raise [Unify] if not possible. *)
+val unify_effect_rows: Env.t -> Types.effect_row -> Types.effect_row -> unit
+        (* Unify two effect rows. Raise [Unify] if not possible. *)
 val unify_gadt:
     Pattern_env.t -> pat:type_expr -> expected:type_expr -> Btype.TypePairs.t
         (* [unify_gadt penv ~pat:ty1 ~expected:ty2] unifies [ty1] and [ty2]

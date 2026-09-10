@@ -60,18 +60,20 @@ type row_desc
 type row_field
 type field_kind
 type commutable
+type effect_row
+type effect_flag
 
 type type_desc =
   | Tvar of string option
   (** [Tvar (Some "a")] ==> ['a] or ['_a]
       [Tvar None]       ==> [_] *)
 
-  | Tarrow of arg_label * type_expr * type_expr * commutable
-  (** [Tarrow (Nolabel,      e1, e2, c)] ==> [e1    -> e2]
-      [Tarrow (Labelled "l", e1, e2, c)] ==> [l:e1  -> e2]
-      [Tarrow (Optional "l", e1, e2, c)] ==> [?l:e1 -> e2]
+  | Tarrow of arg_label * type_expr * type_expr * commutable * effect_row
+  (** [Tarrow (Nolabel,      e1, e2, c, eff)] ==> [e1    -> e2]
+      [Tarrow (Labelled "l", e1, e2, c, eff)] ==> [l:e1  -> e2]
+      [Tarrow (Optional "l", e1, e2, c, eff)] ==> [?l:e1 -> e2]
 
-      See [commutable] for the last argument.
+      See [commutable] for the 4th argument and [effect_row] for the 5th.
       The argument type must be a [Tpoly] node. *)
 
   | Ttuple of (string option * type_expr) list
@@ -128,6 +130,9 @@ type type_desc =
 
   | Tfunctor of arg_label * Ident.Unscoped.t * package * type_expr
   (** Type of a dependent arrow *)
+
+  | Teffect_row of effect_row
+  (** Internal representation of an extended effect row tail *)
 
   | Texpand of type_expr * abbrev
   (** [Texpand] is like [Tlink] but the result of an expansion;
@@ -463,6 +468,36 @@ val match_row_field:
     either:(bool -> type_expr list -> bool ->
             row_field_cell * row_field option ->'a) ->
     row_field -> 'a
+
+(** Constructor and accessors for [effect_row] *)
+
+type effect_flag_view =
+  | EF_present
+  | EF_absent
+  | EF_var
+
+type effect_row_repr =
+  { er_fields: (label * effect_flag) list;
+    er_more:   type_expr;
+    er_closed: bool; }
+
+val create_effect_row:
+  fields:(label * effect_flag) list ->
+  more:type_expr ->
+  closed:bool ->
+  effect_row
+
+val effect_row_repr: effect_row -> effect_row_repr
+val effect_row_fields: effect_row -> (label * effect_flag) list
+val effect_row_more: effect_row -> type_expr
+val effect_row_closed: effect_row -> bool
+val is_pure_effect_row: effect_row -> bool
+
+val effect_flag_repr: effect_flag -> effect_flag_view
+val eff_present: effect_flag
+val eff_absent: effect_flag
+val eff_var: unit -> effect_flag
+val link_effect_flag: inside:effect_flag -> effect_flag -> unit
 
 
 (* *)

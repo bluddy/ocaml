@@ -65,9 +65,12 @@ let compute_variance env visited vari ty =
     visited := TypeMap.add ty vari !visited;
     let compute_same = compute_variance_rec env vari in
     match get_desc ty with
-      Tarrow (_, ty1, ty2, _) ->
+      Tarrow (_, ty1, ty2, _, eff) ->
         compute_variance_rec env (Variance.conjugate vari) ty1;
-        compute_same ty2
+        compute_same ty2;
+        compute_same (effect_row_more eff)
+    | Teffect_row eff ->
+        compute_same (effect_row_more eff)
     | Tfunctor (_, id, pack, ty) ->
       let env' =
           Env.add_module (Ident.of_unscoped id) Mp_present

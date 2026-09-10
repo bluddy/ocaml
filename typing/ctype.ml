@@ -688,6 +688,24 @@ let rec filter_row_fields erase = function
           link_row_field_ext ~inside:f rf_absent; fi
       | _ -> p :: fi
 
+let sort_effect_row_fields = List.sort (fun (p,_) (q,_) -> compare p q)
+
+let rec merge_erf r1 r2 pairs fi1 fi2 =
+  match fi1, fi2 with
+    (l1,f1 as p1)::fi1', (l2,f2 as p2)::fi2' ->
+      if l1 = l2 then merge_erf r1 r2 ((l1,f1,f2)::pairs) fi1' fi2' else
+      if l1 < l2 then merge_erf (p1::r1) r2 pairs fi1' fi2 else
+      merge_erf r1 (p2::r2) pairs fi1 fi2'
+  | [], _ -> (List.rev r1, List.rev_append r2 fi2, pairs)
+  | _, [] -> (List.rev_append r1 fi1, List.rev r2, pairs)
+
+let merge_effect_row_fields fi1 fi2 =
+  match fi1, fi2 with
+    [], _ | _, [] -> (fi1, fi2, [])
+  | [p1], _ when not (List.mem_assoc (fst p1) fi2) -> (fi1, fi2, [])
+  | _, [p2] when not (List.mem_assoc (fst p2) fi1) -> (fi1, fi2, [])
+  | _ -> merge_erf [] [] [] (sort_effect_row_fields fi1) (sort_effect_row_fields fi2)
+
                     (**************************************)
                     (*  Check genericity of type schemes  *)
                     (**************************************)
@@ -736,6 +754,16 @@ let free_vars ~init ~add_one ?env mark ty =
           let acc = fold_row (fv ~kind:Type_variable) acc row in
           if static_row row then acc
           else fv ~kind:Row_variable acc (row_more row)
+      | Tarrow (_, ty1, ty2, _, eff), _ ->
+          let acc = fv ~kind:Type_variable acc ty1 in
+          let acc = fv ~kind:Type_variable acc ty2 in
+          let r = effect_row_repr eff in
+          if r.er_closed then acc
+          else fv ~kind:Row_variable acc r.er_more
+      | Teffect_row eff, _ ->
+          let r = effect_row_repr eff in
+          if r.er_closed then acc
+          else fv ~kind:Row_variable acc r.er_more
       | _    ->
           fold_type_expr (fv ~kind) acc ty
   in fv ~kind:Type_variable init ty
@@ -1161,9 +1189,12 @@ let rec lower_contravariant env var_level visited contra ty =
         let mty = modtype_of_package env Location.none pack in
         let env = Env.add_module (Ident.of_unscoped id) Mp_present mty env in
         lower_contravariant env var_level visited contra t2
-    | Tarrow (_, t1, t2, _) ->
+    | Tarrow (_, t1, t2, _, eff) ->
         lower_rec true t1;
-        lower_rec contra t2
+        lower_rec contra t2;
+        lower_rec contra (effect_row_more eff)
+    | Teffect_row eff ->
+        lower_rec contra (effect_row_more eff)
     | _ ->
         iter_type_expr (lower_rec contra) ty
   end
@@ -2153,7 +2184,7 @@ let rec extract_concrete_typedecl env ty =
       end
   | Tpoly(ty, _) -> extract_concrete_typedecl env ty
   | Tarrow _ | Ttuple _ | Tobject _ | Tfield _ | Tnil
-  | Tvariant _ | Tpackage _ | Tfunctor _ -> Has_no_typedecl
+  | Tvariant _ | Tpackage _ | Tfunctor _ | Teffect_row _ -> Has_no_typedecl
   | Tvar _ | Tunivar _ -> May_have_typedecl
   | Tlink _ | Tsubst _ | Texpand _ -> assert false
 
@@ -2998,7 +3029,7 @@ let rec mcomp type_pairs env t1 t2 =
         | (Tvar _, _)
         | (_, Tvar _)  ->
             ()
-        | (Tarrow (l1, t1, u1, _), Tarrow (l2, t2, u2, _))
+        | (Tarrow (l1, t1, u1, _, _), Tarrow (l2, t2, u2, _, _))
           when compatible_labels ~in_pattern_mode:true l1 l2 ->
             mcomp type_pairs env t1 t2;
             mcomp type_pairs env u1 u2;
@@ -3019,11 +3050,11 @@ let rec mcomp type_pairs env t1 t2 =
         | (Tfunctor (l1, _, _, u1), Tfunctor (l2, _, _, u2))
           when compatible_labels ~in_pattern_mode:true l1 l2 ->
             mcomp type_pairs env u1 u2
-        | (Tfunctor (l1, _, pack1, u1), Tarrow (l2, t2, u2, _))
+        | (Tfunctor (l1, _, pack1, u1), Tarrow (l2, t2, u2, _, _))
           when compatible_labels ~in_pattern_mode:true l1 l2 ->
             mcomp type_pairs env (newmono_package pack1) t2;
             mcomp type_pairs env u1 u2
-        | (Tarrow (l1, t1, u1, _), Tfunctor (l2, _, pack2, u2))
+        | (Tarrow (l1, t1, u1, _, _), Tfunctor (l2, _, pack2, u2))
           when compatible_labels ~in_pattern_mode:true l1 l2 ->
             mcomp type_pairs env t1 (newmono_package pack2);
             mcomp type_pairs env u1 u2
@@ -3494,9 +3525,10 @@ and unify3 uenv t1' t2' =
     end;
     try
       begin match (d1, d2) with
-        (Tarrow (l1, t1, u1, c1), Tarrow (l2, t2, u2, c2)) ->
+        (Tarrow (l1, t1, u1, c1, eff1), Tarrow (l2, t2, u2, c2, eff2)) ->
           eq_labels Unify ~in_pattern_mode:(in_pattern_mode uenv) l1 l2;
           unify uenv t1 t2; unify uenv u1 u2;
+          unify_effect_rows uenv eff1 eff2;
           begin match is_commu_ok c1, is_commu_ok c2 with
           | false, true -> set_commu_ok c1
           | true, false -> set_commu_ok c2
@@ -3517,7 +3549,7 @@ and unify3 uenv t1' t2' =
             let mty2 = modtype_of_package env Location.none pack2 in
             enter_functor_for_unify uenv id1 (newty d1) id2 t2' mty2
                             (fun uenv -> unify uenv ty1 ty2)
-      | (Tfunctor (l1, id1, pack1, u1), Tarrow (l2, t2, u2, c2)) ->
+      | (Tfunctor (l1, id1, pack1, u1), Tarrow (l2, t2, u2, c2, _)) ->
             eq_labels Unify ~in_pattern_mode:(in_pattern_mode uenv) l1 l2;
             unify uenv (newmono_package pack1) t2;
             let env = get_env uenv in
@@ -3527,7 +3559,7 @@ and unify3 uenv t1' t2' =
                 [id1] u1;
             unify uenv u1 u2;
             if not (is_commu_ok c2) then set_commu_ok c2
-      | (Tarrow (l1, t1, u1, c1), Tfunctor (l2, id2, pack2, u2)) ->
+      | (Tarrow (l1, t1, u1, c1, _), Tfunctor (l2, id2, pack2, u2)) ->
             eq_labels Unify ~in_pattern_mode:(in_pattern_mode uenv) l1 l2;
             unify uenv t1 (newmono_package pack2);
             let env = get_env uenv in
@@ -3732,6 +3764,65 @@ and unify_fields uenv ty1 ty2 =          (* Optimization *)
     Transient_expr.set_desc tr1 d1;
     Transient_expr.set_desc tr2 d2;
     raise exn
+
+and unify_effect_flags _uenv f1 f2 =
+  match effect_flag_repr f1, effect_flag_repr f2 with
+  | EF_present, EF_present -> ()
+  | EF_absent, EF_absent -> ()
+  | EF_var, _ ->
+      link_effect_flag ~inside:f1 f2
+  | _, EF_var ->
+      link_effect_flag ~inside:f2 f1
+  | EF_present, EF_absent
+  | EF_absent, EF_present ->
+      raise_unexplained_for Unify
+
+and unify_effect_rows uenv row1 row2 =
+  let r1 = effect_row_repr row1 in
+  let r2 = effect_row_repr row2 in
+  let only1, only2, pairs = merge_effect_row_fields r1.er_fields r2.er_fields in
+  List.iter (fun (_lbl, f1, f2) ->
+    unify_effect_flags uenv f1 f2
+  ) pairs;
+  if r1.er_closed && only2 <> [] then raise_unexplained_for Unify;
+  if r2.er_closed && only1 <> [] then raise_unexplained_for Unify;
+  if r1.er_closed && r2.er_closed then begin
+    if only1 <> [] || only2 <> [] then raise_unexplained_for Unify
+  end else if r1.er_closed && not r2.er_closed then begin
+    let rm2 = r2.er_more in
+    let ext2 = newgenty (Teffect_row (create_effect_row ~fields:only1 ~more:(newty2 ~level:generic_level Tnil) ~closed:true)) in
+    occur_for Unify uenv rm2 ext2;
+    update_level_for Unify (get_env uenv) (get_level rm2) ext2;
+    update_scope_for Unify (get_scope rm2) ext2;
+    link_type rm2 ext2
+  end else if not r1.er_closed && r2.er_closed then begin
+    let rm1 = r1.er_more in
+    let ext1 = newgenty (Teffect_row (create_effect_row ~fields:only2 ~more:(newty2 ~level:generic_level Tnil) ~closed:true)) in
+    occur_for Unify uenv rm1 ext1;
+    update_level_for Unify (get_env uenv) (get_level rm1) ext1;
+    update_scope_for Unify (get_scope rm1) ext1;
+    link_type rm1 ext1
+  end else begin
+    let rm1 = r1.er_more in
+    let rm2 = r2.er_more in
+    if eq_type rm1 rm2 then begin
+      if only1 <> [] || only2 <> [] then raise_unexplained_for Unify
+    end else if only1 = [] && only2 = [] then begin
+      unify uenv rm1 rm2
+    end else begin
+      let new_more = newty2 ~level:(Int.min (get_level rm1) (get_level rm2)) (Tvar None) in
+      let ext1 = newgenty (Teffect_row (create_effect_row ~fields:only2 ~more:new_more ~closed:false)) in
+      let ext2 = newgenty (Teffect_row (create_effect_row ~fields:only1 ~more:new_more ~closed:false)) in
+      occur_for Unify uenv rm1 ext1;
+      occur_for Unify uenv rm2 ext2;
+      update_level_for Unify (get_env uenv) (get_level rm1) ext1;
+      update_scope_for Unify (get_scope rm1) ext1;
+      link_type rm1 ext1;
+      update_level_for Unify (get_env uenv) (get_level rm2) ext2;
+      update_scope_for Unify (get_scope rm2) ext2;
+      link_type rm2 ext2
+    end
+  end
 
 and unify_kind k1 k2 =
   match field_kind_repr k1, field_kind_repr k2 with
@@ -4024,6 +4115,9 @@ let unify_pairs env ty1 ty2 pairs =
 let unify env ty1 ty2 =
   unify_pairs env ty1 ty2 []
 
+let unify_effect_rows env row1 row2 =
+  unify_effect_rows (Expression {env; in_subst = false}) row1 row2
+
 (* Lower the level of a type to the current level *)
 let enforce_current_level env ty = unify_var env (newvar ()) ty
 
@@ -4055,7 +4149,7 @@ let instance_funct_nondep env l (tfun : Types.tfunctor) mty =
   | exception Unify_trace trace ->
     let got = newty (Tfunctor (l, tfun.id_us, tfun.pack, tfun.ty)) in
     let expected =
-      newty (Tarrow (l, newmono_package tfun.pack, newvar (), commu_ok))
+      newty (Tarrow (l, newmono_package tfun.pack, newvar (), commu_ok, fresh_ambient_row_var ()))
     in
     let trace = Diff {got; expected} :: trace in
     raise (Unify (expand_to_unification_error env trace))
@@ -4098,7 +4192,7 @@ let function_type l ~param_hole level =
     end
   in
   let t2 = newvar2 level in
-  let t' = newty2 ~level (Tarrow (l, t1, t2, commu_ok)) in
+  let t' = newty2 ~level (Tarrow (l, t1, t2, commu_ok, fresh_ambient_row_var ~level ())) in
   t', t1, t2
 
 let arrow_unification_error ~in_apply env t t' trace =
@@ -4125,7 +4219,7 @@ let filter_arrow env ~in_apply t l ~param_hole =
   | t ->
     match get_desc t with
     | Tvar _ -> Ok (arrow_unify_var ~param_hole l t)
-    | Tarrow(l', ty_param, ty_ret, _) ->
+    | Tarrow(l', ty_param, ty_ret, _, _) ->
         if l = l' || !Clflags.classic && l = Nolabel && not (is_optional l')
         then Ok { ty_param; ty_ret }
         else Error (Label_mismatch
@@ -4142,12 +4236,12 @@ let filter_arrow env ~in_apply t l ~param_hole =
           with
           | exception Unify_trace trace ->
               let pack = newmono_package pack in
-              let t' = newty (Tarrow (l, pack, newvar (), commu_ok)) in
+              let t' = newty (Tarrow (l, pack, newvar (), commu_ok, fresh_ambient_row_var ())) in
               arrow_unification_error ~in_apply env t t' trace
           | () ->
               let ty_param = newmono_package ~level:(get_level t) pack in
               let t' = newty2 ~level:(get_level t)
-                  (Tarrow (l, ty_param, ty_ret, commu_ok))
+                  (Tarrow (l, ty_param, ty_ret, commu_ok, fresh_ambient_row_var ~level:(get_level t) ()))
               in
               link_type t t';
               Ok { ty_param; ty_ret }
@@ -4180,7 +4274,7 @@ let filter_arity env t l =
       | Tvar _ ->
           let ft = arrow_unify_var ~param_hole l t in
           Ok (env, ft.ty_ret)
-      | Tarrow(_, _, ty_ret, _) -> Ok (env, ty_ret)
+      | Tarrow(_, _, ty_ret, _, _) -> Ok (env, ty_ret)
       | Tfunctor (_, id, pack, ct) ->
           let env, ret = open_tfunctor ~loc:Location.none env id pack ct in
           Ok (env, ret)
@@ -4596,7 +4690,7 @@ let rec copy_spine ~unscoped copy_scope ty =
       if unscoped.closed ty then ty
       else copy ~unscoped copy_scope ty
   | (Tarrow _ | Tpoly _ | Ttuple _ | Tpackage _ | Tconstr _
-    | Tfunctor _) as desc ->
+    | Tfunctor _ | Teffect_row _) as desc ->
       let level = get_level ty in
       if unscoped.closed ty && (level < !current_level || level = generic_level)
       then ty else
@@ -4604,8 +4698,10 @@ let rec copy_spine ~unscoped copy_scope ty =
       For_copy.redirect_desc copy_scope ty (Tsubst (t, None));
       let copy_rec = copy_spine ~unscoped copy_scope in
       let desc' = match desc with
-      | Tarrow (lbl, ty1, ty2, _) ->
-          Tarrow (lbl, copy_rec ty1, copy_rec ty2, commu_ok)
+      | Tarrow (lbl, ty1, ty2, _, eff) ->
+          Tarrow (lbl, copy_rec ty1, copy_rec ty2, commu_ok, copy_effect_row copy_rec eff)
+      | Teffect_row eff ->
+          Teffect_row (copy_effect_row copy_rec eff)
       | Tpoly (ty', tvl) ->
           Tpoly (copy_rec ty', tvl)
       | Ttuple tyl ->
@@ -4693,10 +4789,26 @@ let rec moregen type_pairs env t1 t2 =
               moregen_occur env (get_level t1') t2;
               update_scope_for Moregen (get_scope t1') t2;
               link_type t1' t2
-          | (Tarrow (l1, t1, u1, _), Tarrow (l2, t2, u2, _)) ->
+          | (Tarrow (l1, t1, u1, _, eff1), Tarrow (l2, t2, u2, _, eff2)) ->
               eq_labels Moregen ~in_pattern_mode:false l1 l2;
               moregen type_pairs env t1 t2;
-              moregen type_pairs env u1 u2
+              moregen type_pairs env u1 u2;
+              let r1 = effect_row_repr eff1 in
+              let r2 = effect_row_repr eff2 in
+              if r1.er_closed && r1.er_fields = [] then ()
+              else begin
+                List.iter (fun (lbl1, f1) ->
+                  match List.assoc_opt lbl1 r2.er_fields with
+                  | None ->
+                      if r2.er_closed then raise_unexplained_for Moregen
+                  | Some f2 ->
+                      match effect_flag_repr f1, effect_flag_repr f2 with
+                      | EF_present, EF_absent -> raise_unexplained_for Moregen
+                      | _ -> ()
+                ) r1.er_fields;
+                if not r1.er_closed then
+                  moregen type_pairs env r1.er_more r2.er_more
+              end
           | (Tfunctor (l1, id1, pack1, t1), Tfunctor (l2, id2, pack2, t2)) ->
               eq_labels Moregen ~in_pattern_mode:false l1 l2;
               moregen_package type_pairs env
@@ -4705,7 +4817,7 @@ let rec moregen type_pairs env t1 t2 =
               let mty2 = modtype_of_package env Location.none pack2 in
               enter_functor_with_mtys_for Moregen env id1 mty1 t1' id2 mty2 t2'
                   (fun new_env -> moregen type_pairs new_env t1 t2)
-          | Tarrow (l1, t1, u1, _), Tfunctor (l2, id2, pack2, u2) ->
+          | Tarrow (l1, t1, u1, _, _), Tfunctor (l2, id2, pack2, u2) ->
                 eq_labels Moregen ~in_pattern_mode:false l1 l2;
                 let t2 = newmono_package pack2 in
                 moregen type_pairs env t1 t2;
@@ -4714,7 +4826,7 @@ let rec moregen type_pairs env t1 t2 =
                                           Mp_present mty env in
                 identifier_escape_for Moregen env' [id2] u2;
                 moregen type_pairs env u1 u2
-          | Tfunctor (l1, id1, pack1, u1), Tarrow (l2, t2, u2, _) ->
+          | Tfunctor (l1, id1, pack1, u1), Tarrow (l2, t2, u2, _, _) ->
                 eq_labels Moregen ~in_pattern_mode:false l1 l2;
                 let t1 = newmono_package pack1 in
                 moregen type_pairs env t1 t2;
@@ -4723,6 +4835,23 @@ let rec moregen type_pairs env t1 t2 =
                                           Mp_present mty env in
                 identifier_escape_for Moregen env' [id1] u1;
                 moregen type_pairs env u1 u2
+          | (Teffect_row eff1, Teffect_row eff2) ->
+              let r1 = effect_row_repr eff1 in
+              let r2 = effect_row_repr eff2 in
+              if r1.er_closed && r1.er_fields = [] then ()
+              else begin
+                List.iter (fun (lbl1, f1) ->
+                  match List.assoc_opt lbl1 r2.er_fields with
+                  | None ->
+                      if r2.er_closed then raise_unexplained_for Moregen
+                  | Some f2 ->
+                      match effect_flag_repr f1, effect_flag_repr f2 with
+                      | EF_present, EF_absent -> raise_unexplained_for Moregen
+                      | _ -> ()
+                ) r1.er_fields;
+                if not r1.er_closed then
+                  moregen type_pairs env r1.er_more r2.er_more
+              end
           | (Ttuple tl1, Ttuple tl2) ->
               moregen_labeled_list type_pairs env tl1 tl2
           | (Tconstr (p1, tl1, _), Tconstr (p2, tl2, _))
@@ -5095,10 +5224,14 @@ let rec eqtype rename type_pairs subst env t1 t2 =
           match (get_desc t1', get_desc t2') with
             (Tvar _, Tvar _) when rename ->
               eqtype_subst type_pairs subst t1' t2'
-          | (Tarrow (l1, t1, u1, _), Tarrow (l2, t2, u2, _)) ->
+          | (Tarrow (l1, t1, u1, _, eff1), Tarrow (l2, t2, u2, _, eff2)) ->
               eq_labels Equality ~in_pattern_mode:false l1 l2;
               eqtype rename type_pairs subst env t1 t2;
-              eqtype rename type_pairs subst env u1 u2
+              eqtype rename type_pairs subst env u1 u2;
+              let r1 = effect_row_repr eff1 in
+              let r2 = effect_row_repr eff2 in
+              if r1.er_closed && r2.er_closed && r1.er_fields = [] && r2.er_fields = [] then ()
+              else eqtype rename type_pairs subst env r1.er_more r2.er_more
           | (Tfunctor (l1, id1, pack1, t1), Tfunctor (l2, id2, pack2, t2)) ->
               eq_labels Equality ~in_pattern_mode:false l1 l2;
               eqtype_package rename type_pairs subst env
@@ -5107,7 +5240,7 @@ let rec eqtype rename type_pairs subst env t1 t2 =
               let mty2 = modtype_of_package env Location.none pack2 in
               enter_functor_with_mtys_for Equality env id1 mty1 t1' id2 mty2 t2'
                   (fun new_env -> eqtype rename type_pairs subst new_env t1 t2)
-          | (Tfunctor (l1, id1, pack1, u1), Tarrow (l2, t2, u2, _)) ->
+          | (Tfunctor (l1, id1, pack1, u1), Tarrow (l2, t2, u2, _, _)) ->
               eq_labels Equality ~in_pattern_mode:false l1 l2;
               let t1 = newmono_package pack1 in
               eqtype rename type_pairs subst env t1 t2;
@@ -5116,7 +5249,7 @@ let rec eqtype rename type_pairs subst env t1 t2 =
                                         Mp_present mty env in
               identifier_escape_for Equality env' [id1] u1;
               eqtype rename type_pairs subst env u1 u2
-          | (Tarrow (l1, t1, u1, _), Tfunctor (l2, id2, pack2, u2)) ->
+          | (Tarrow (l1, t1, u1, _, _), Tfunctor (l2, id2, pack2, u2)) ->
               eq_labels Equality ~in_pattern_mode:false l1 l2;
               let t2 = newmono_package pack2 in
               eqtype rename type_pairs subst env t1 t2;
@@ -5125,6 +5258,10 @@ let rec eqtype rename type_pairs subst env t1 t2 =
                                         Mp_present mty env in
               identifier_escape_for Equality env' [id2] u2;
               eqtype rename type_pairs subst env u1 u2
+          | (Teffect_row eff1, Teffect_row eff2) ->
+              let r1 = effect_row_repr eff1 in
+              let r2 = effect_row_repr eff2 in
+              eqtype rename type_pairs subst env r1.er_more r2.er_more
           | (Ttuple tl1, Ttuple tl2) ->
               eqtype_labeled_list rename type_pairs subst env tl1 tl2
           | (Tconstr (p1, tl1, _), Tconstr (p2, tl2, _))
@@ -5672,7 +5809,7 @@ let rec build_subtype env (visited : transient_expr list)
           (t, Unchanged)
       else
         (t, Unchanged)
-  | Tarrow(l, t1, t2, _) ->
+  | Tarrow(l, t1, t2, _, eff) ->
       let tt = Transient_expr.repr t in
       if memq_warn tt visited then (t, Unchanged) else
       let visited = tt :: visited in
@@ -5680,7 +5817,7 @@ let rec build_subtype env (visited : transient_expr list)
       let (t2', c2) = build_subtype env visited loops posi level t2 in
       let c = max_change c1 c2 in
       if c > Unchanged
-      then (newty (Tarrow(l, t1', t2', commu_ok)), c)
+      then (newty (Tarrow(l, t1', t2', commu_ok, eff)), c)
       else (t, Unchanged)
   | Tfunctor (l, us, pack, ty) ->
       let tt = Transient_expr.repr t in
@@ -5838,7 +5975,7 @@ let rec build_subtype env (visited : transient_expr list)
       let (t1', c) = build_subtype env visited loops posi level t1 in
       if c > Unchanged then (newty (Tpoly(t1', tl)), c)
       else (t, Unchanged)
-  | Tunivar _ | Tpackage _ ->
+  | Tunivar _ | Tpackage _ | Teffect_row _ ->
       (t, Unchanged)
   | Tsubst _ | Tlink _ | Texpand _ ->
       assert false
@@ -5882,16 +6019,37 @@ let rec subtype_rec env trace t1 t2 constraints =
     match (get_desc t1, get_desc t2) with
       (Tvar _, _) | (_, Tvar _) ->
         (env, trace, t1, t2, !univar_pairs)::constraints
-    | (Tarrow(l1, t1, u1, _), Tarrow(l2, t2, u2, _))
+    | (Tarrow(l1, t1, u1, _, eff1), Tarrow(l2, t2, u2, _, eff2))
       when compatible_labels ~in_pattern_mode:false l1 l2 ->
         (* the trace will be updated at the next step due to the Tpoly wrapping
            of parameter. *)
         let constraints = subtype_rec env trace t2 t1 constraints in
-        subtype_rec
-          env
-          (Subtype.Diff {got = u1; expected = u2} :: trace)
-          u1 u2
+        let constraints =
+          subtype_rec
+            env
+            (Subtype.Diff {got = u1; expected = u2} :: trace)
+            u1 u2
+            constraints
+        in
+        let r1 = effect_row_repr eff1 in
+        let r2 = effect_row_repr eff2 in
+        if r1.er_closed && r1.er_fields = [] then
           constraints
+        else begin
+          List.iter (fun (lbl1, f1) ->
+            match List.assoc_opt lbl1 r2.er_fields with
+            | None ->
+                if r2.er_closed then subtype_error ~env ~trace ~unification_trace:[]
+            | Some f2 ->
+                match effect_flag_repr f1, effect_flag_repr f2 with
+                | EF_present, EF_absent -> subtype_error ~env ~trace ~unification_trace:[]
+                | _ -> ()
+          ) r1.er_fields;
+          if not r1.er_closed then
+            subtype_rec env trace r1.er_more r2.er_more constraints
+          else
+            constraints
+        end
     | (Tfunctor (l1, id1, pack1, u1), Tfunctor (l2, id2, pack2, u2))
       when compatible_labels ~in_pattern_mode:false l1 l2 ->
         let fcm1 = newty (Tpackage pack1) in
@@ -5908,7 +6066,7 @@ let rec subtype_rec env trace t1 t2 constraints =
               subtype_functor new_env trace ~id1 id2 pack2 u1 u2 constraints)
           with Escape _ -> (env, trace, t1, t2, !univar_pairs)::constraints
         end
-    | (Tfunctor (l1, id1, pack1, u1), Tarrow (l2, fcm2, u2, _))
+    | (Tfunctor (l1, id1, pack1, u1), Tarrow (l2, fcm2, u2, _, _))
       when compatible_labels ~in_pattern_mode:false l1 l2 ->
         let fcm1 = newmono_package pack1 in
         let constraints =
@@ -5922,7 +6080,7 @@ let rec subtype_rec env trace t1 t2 constraints =
           | exception Not_found ->
             (env, trace, t1, t2, !univar_pairs)::constraints
         end
-    | (Tarrow (l1, fcm1, u1, _),  Tfunctor (l2, id2, pack2, u2))
+    | (Tarrow (l1, fcm1, u1, _, _),  Tfunctor (l2, id2, pack2, u2))
       when compatible_labels ~in_pattern_mode:false l1 l2 ->
         let fcm2 = newmono_package pack2 in
         let constraints =
@@ -5930,6 +6088,26 @@ let rec subtype_rec env trace t1 t2 constraints =
           subtype_rec env trace fcm2 fcm1 constraints
         in
         subtype_functor env trace id2 pack2 u1 u2 constraints
+    | (Teffect_row eff1, Teffect_row eff2) ->
+        let r1 = effect_row_repr eff1 in
+        let r2 = effect_row_repr eff2 in
+        if r1.er_closed && r1.er_fields = [] then
+          constraints
+        else begin
+          List.iter (fun (lbl1, f1) ->
+            match List.assoc_opt lbl1 r2.er_fields with
+            | None ->
+                if r2.er_closed then subtype_error ~env ~trace ~unification_trace:[]
+            | Some f2 ->
+                match effect_flag_repr f1, effect_flag_repr f2 with
+                | EF_present, EF_absent -> subtype_error ~env ~trace ~unification_trace:[]
+                | _ -> ()
+          ) r1.er_fields;
+          if not r1.er_closed then
+            subtype_rec env trace r1.er_more r2.er_more constraints
+          else
+            constraints
+        end
     | (Ttuple tl1, Ttuple tl2) ->
         subtype_labeled_list env trace tl1 tl2 constraints
     | (Tconstr(p1, [], _), Tconstr(p2, [], _))
@@ -6424,7 +6602,7 @@ let arrow_spine env ty =
     if try_mark_node mark ty
     then (
       match get_desc ty with
-      | Tarrow (label, ty_arg, ty_ret, _commu) ->
+      | Tarrow (label, ty_arg, ty_ret, _commu, _eff) ->
         arrow_spine_rec ~mark ((label, Arg_value ty_arg) :: labels) ty_ret
       | Tfunctor (label, mod_id, package, ty_ret) ->
         arrow_spine_rec

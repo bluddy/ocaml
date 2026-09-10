@@ -826,7 +826,7 @@ let core_type sub ct =
       Ttyp_any -> Ptyp_any
     | Ttyp_var s -> Ptyp_var s
     | Ttyp_arrow (label, ct1, ct2) ->
-        Ptyp_arrow (label, sub.typ sub ct1, sub.typ sub ct2)
+        Ptyp_arrow (label, sub.typ sub ct1, sub.typ sub ct2, None)
     | Ttyp_tuple list ->
         Ptyp_tuple (List.map (fun (l, typ) -> l, sub.typ sub typ) list)
     | Ttyp_constr (_path, lid, list) ->

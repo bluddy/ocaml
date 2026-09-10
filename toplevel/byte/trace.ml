@@ -68,7 +68,7 @@ let print_label ppf l =
 
 let split_arrow env ty =
   match get_desc (Ctype.expand_head env ty) with
-  | Tarrow(l, t1, t2, _) -> Some (l, t1, env, t2)
+  | Tarrow(l, t1, t2, _, _) -> Some (l, t1, env, t2)
   | Tfunctor (l,id,pack,t2) ->
       let t1 = Ctype.newty (Tpackage pack) in
       let env, t2 = Ctype.open_tfunctor ~loc:Location.none env id pack t2 in

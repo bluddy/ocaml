@@ -157,6 +157,16 @@ val fold_type_expr: ('a -> type_expr -> 'a) -> 'a -> type_expr -> 'a
 val iter_row: (type_expr -> unit) -> row_desc -> unit
         (* Iteration on types in a row *)
 val fold_row: ('a -> type_expr -> 'a) -> 'a -> row_desc -> 'a
+
+(**** Operations on effect rows ****)
+val empty_pure_row : unit -> effect_row
+val fresh_ambient_row_var : ?level:int -> unit -> effect_row
+val new_effect_row : ?closed:bool -> ?level:int -> (label * effect_flag) list -> effect_row
+val copy_effect_row : (type_expr -> type_expr) -> effect_row -> effect_row
+val copy_effect_flag : bool -> effect_flag -> effect_flag
+val iter_effect_row : (type_expr -> unit) -> effect_row -> unit
+val fold_effect_row : ('a -> type_expr -> 'a) -> 'a -> effect_row -> 'a
+
 val iter_abbrev_memo: (type_expr -> unit) -> abbrev_memo -> unit
         (* Iteration on types in an abbreviation list *)
 val iter_type_expr_kind: (type_expr -> unit) -> (type_decl_kind -> unit)
