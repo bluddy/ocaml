@@ -3732,6 +3732,56 @@ alias_type:
                                           foo: int -> int
                                           ?foo: int -> int
  *)
+%inline effect_arrow:
+  | MINUSGREATER
+      { None }
+  | MINUS LBRACKET RBRACKET MINUSGREATER
+      { Some { erow_labels = []; erow_tail = None; erow_closed = true } }
+  | MINUS LBRACKET row = effect_row RBRACKET MINUSGREATER
+      { Some row }
+;
+
+effect_row:
+  | id = LIDENT
+      { if id = "pure" then
+          { erow_labels = []; erow_tail = None; erow_closed = true }
+        else
+          raise Syntaxerr.(Error(Other (make_loc $sloc)))
+      }
+  | tail = effect_tail
+      { { erow_labels = []; erow_tail = Some tail; erow_closed = false } }
+  | fields = effect_field_list
+      { { erow_labels = fields; erow_tail = None; erow_closed = true } }
+  | fields = effect_field_list BAR tail = effect_tail
+      { { erow_labels = fields; erow_tail = Some tail; erow_closed = false } }
+;
+
+effect_tail:
+  | QUOTE tyvar = mkloc(ident)
+      { tyvar }
+;
+
+effect_field_list:
+  | f = effect_field
+      { [f] }
+  | f = effect_field COMMA
+      { [f] }
+  | f = effect_field COMMA rest = effect_field_list
+      { f :: rest }
+;
+
+effect_field:
+  | id = mkloc(constr_longident)
+      { let name = String.concat "." (Longident.flatten id.txt) in
+        ({ id with txt = name }, F_Present) }
+  | TILDE id = mkloc(constr_longident)
+      { let name = String.concat "." (Longident.flatten id.txt) in
+        ({ id with txt = name }, F_Absent) }
+  | QUESTION flag_var = mkloc(ident) id = mkloc(constr_longident)
+      { let name = String.concat "." (Longident.flatten id.txt) in
+        ({ id with txt = name }, F_Var flag_var) }
+;
+
 function_type:
   | ty = tuple_type
     %prec MINUSGREATER
@@ -3739,9 +3789,9 @@ function_type:
   | mktyp(
       label = arg_label
       domain = extra_rhs(param_type)
-      MINUSGREATER
+      arrow = effect_arrow
       codomain = function_type
-        { Ptyp_arrow(label, domain, codomain) }
+        { Ptyp_arrow(label, domain, codomain, arrow) }
     )
     { $1 }
   (* The next two cases are for labeled tuples - see comment on [tuple_type]
@@ -3757,7 +3807,7 @@ function_type:
   | mktyp(
       label = LIDENT COLON
       tuple = proper_tuple_type
-      MINUSGREATER
+      arrow = effect_arrow
       codomain = function_type
         { let ty, ltys = tuple in
           let tuple_loc = $loc(tuple) in
@@ -3765,7 +3815,7 @@ function_type:
             mktyp ~loc:tuple_loc (Ptyp_tuple ((None, ty) :: ltys))
           in
           let domain = extra_rhs_core_type domain ~pos:(snd tuple_loc) in
-          Ptyp_arrow(Labelled label, domain, codomain) }
+          Ptyp_arrow(Labelled label, domain, codomain, arrow) }
     )
     { $1 }
   | label = LIDENT COLON proper_tuple_type %prec MINUSGREATER

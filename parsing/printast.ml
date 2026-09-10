@@ -146,11 +146,27 @@ let rec core_type i ppf x =
   match x.ptyp_desc with
   | Ptyp_any -> line i ppf "Ptyp_any\n";
   | Ptyp_var (s) -> line i ppf "Ptyp_var %s\n" s;
-  | Ptyp_arrow (l, ct1, ct2) ->
+  | Ptyp_arrow (l, ct1, ct2, eff) ->
       line i ppf "Ptyp_arrow\n";
       arg_label i ppf l;
       core_type i ppf ct1;
       core_type i ppf ct2;
+      (match eff with
+       | None -> ()
+       | Some eff ->
+           line (i+1) ppf "effect_row\n";
+           List.iter (fun (lbl, flag) ->
+             let flag_str = match flag with
+               | F_Present -> "Present"
+               | F_Absent -> "Absent"
+               | F_Var v -> Printf.sprintf "Var %s" v.txt
+             in
+             line (i+2) ppf "%s: %s\n" lbl.txt flag_str
+           ) eff.erow_labels;
+           (match eff.erow_tail with
+            | None -> ()
+            | Some tail -> line (i+2) ppf "tail: '%s\n" tail.txt);
+           line (i+2) ppf "closed: %b\n" eff.erow_closed;);
   | Ptyp_tuple l ->
       line i ppf "Ptyp_tuple\n";
       list i (labeled_tuple_element core_type) ppf l;

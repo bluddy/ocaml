@@ -440,9 +440,29 @@ and core_type ctxt f x =
       (attributes ctxt) x.ptyp_attributes
   end
   else match x.ptyp_desc with
-    | Ptyp_arrow (l, ct1, ct2) ->
-        pp f "@[<2>%a@;->@;%a@]" (* FIXME remove parens later *)
-          (type_with_label ctxt) (l,ct1) (core_type ctxt) ct2
+    | Ptyp_arrow (l, ct1, ct2, eff) ->
+        let arrow_str =
+          match eff with
+          | None -> "->"
+          | Some { erow_labels = []; erow_tail = None; _ } -> "-[]->"
+          | Some { erow_labels = []; erow_tail = Some tail; _ } ->
+              Printf.sprintf "-['%s]->" tail.txt
+          | Some { erow_labels; erow_tail; _ } ->
+              let labels_str =
+                erow_labels
+                |> List.map (fun (lbl, flag) ->
+                     match flag with
+                     | F_Present -> lbl.txt
+                     | F_Absent -> "~" ^ lbl.txt
+                     | F_Var v -> "?" ^ v.txt ^ " " ^ lbl.txt)
+                |> String.concat ", "
+              in
+              match erow_tail with
+              | None -> Printf.sprintf "-[ %s ]->" labels_str
+              | Some tail -> Printf.sprintf "-[ %s | '%s ]->" labels_str tail.txt
+        in
+        pp f "@[<2>%a@;%s@;%a@]" (* FIXME remove parens later *)
+          (type_with_label ctxt) (l,ct1) arrow_str (core_type ctxt) ct2
     | Ptyp_functor (label, name, pack, ct) ->
         pp f "@[<2>%a@;->@;%a@]"
             (functor_arg_with_label ctxt) (label, (name, pack))

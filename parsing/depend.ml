@@ -97,7 +97,7 @@ let rec add_type bv ty =
   match ty.ptyp_desc with
     Ptyp_any -> ()
   | Ptyp_var _ -> ()
-  | Ptyp_arrow(_, t1, t2) -> add_type bv t1; add_type bv t2
+  | Ptyp_arrow(_, t1, t2, _) -> add_type bv t1; add_type bv t2
   | Ptyp_tuple tl -> List.iter (fun (_, t) -> add_type bv t) tl
   | Ptyp_constr(c, tl) -> add bv c; List.iter (add_type bv) tl
   | Ptyp_object (fl, _) ->

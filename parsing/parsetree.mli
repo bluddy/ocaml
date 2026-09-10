@@ -92,14 +92,17 @@ and core_type =
 and core_type_desc =
   | Ptyp_any  (** [_] *)
   | Ptyp_var of string  (** A type variable such as ['a] *)
-  | Ptyp_arrow of arg_label * core_type * core_type
-      (** [Ptyp_arrow(lbl, T1, T2)] represents:
-            - [T1 -> T2]    when [lbl] is
-                                     {{!Asttypes.arg_label.Nolabel}[Nolabel]},
-            - [~l:T1 -> T2] when [lbl] is
+  | Ptyp_arrow of arg_label * core_type * core_type * effect_row option
+      (** [Ptyp_arrow(lbl, T1, T2, eff)] represents:
+            - [T1 -> T2]             when [lbl] is
+                                     {{!Asttypes.arg_label.Nolabel}[Nolabel]}
+                                     and [eff] is [None],
+            - [~l:T1 -> T2]          when [lbl] is
                                      {{!Asttypes.arg_label.Labelled}[Labelled]},
-            - [?l:T1 -> T2] when [lbl] is
-                                     {{!Asttypes.arg_label.Optional}[Optional]}.
+            - [?l:T1 -> T2]          when [lbl] is
+                                     {{!Asttypes.arg_label.Optional}[Optional]},
+            - [T1 -[ Eff | 'e ]-> T2] when [eff] is [Some ...],
+            - [T1 -[]-> T2]          when [eff] is [Some { erow_labels = []; erow_tail = None }].
          *)
   | Ptyp_tuple of (string option * core_type) list
       (** [Ptyp_tuple(tl)] represents a product type:
@@ -229,6 +232,17 @@ and object_field = {
 and object_field_desc =
   | Otag of label loc * core_type
   | Oinherit of core_type
+
+and effect_row = {
+  erow_labels : (label loc * presence_flag) list;
+  erow_tail   : string loc option;
+  erow_closed : bool;
+}
+
+and presence_flag =
+  | F_Present
+  | F_Absent
+  | F_Var of string loc
 
 (** {2 Patterns} *)
 

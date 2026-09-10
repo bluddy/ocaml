@@ -67,7 +67,7 @@ module Typ = struct
 
   let any ?loc ?attrs () = mk ?loc ?attrs Ptyp_any
   let var ?loc ?attrs a = mk ?loc ?attrs (Ptyp_var a)
-  let arrow ?loc ?attrs a b c = mk ?loc ?attrs (Ptyp_arrow (a, b, c))
+  let arrow ?loc ?attrs ?effects a b c = mk ?loc ?attrs (Ptyp_arrow (a, b, c, effects))
   let tuple ?loc ?attrs a = mk ?loc ?attrs (Ptyp_tuple a)
   let constr ?loc ?attrs a b = mk ?loc ?attrs (Ptyp_constr (a, b))
   let object_ ?loc ?attrs a b = mk ?loc ?attrs (Ptyp_object (a, b))
@@ -97,8 +97,8 @@ module Typ = struct
         | Ptyp_var x ->
             check_variable var_names t.ptyp_loc x;
             Ptyp_var x
-        | Ptyp_arrow (label,core_type,core_type') ->
-            Ptyp_arrow(label, loop core_type, loop core_type')
+        | Ptyp_arrow (label,core_type,core_type',eff) ->
+            Ptyp_arrow(label, loop core_type, loop core_type', eff)
         | Ptyp_tuple lst ->
             Ptyp_tuple (List.map (fun (l, t) -> l, loop t) lst)
         | Ptyp_constr( { txt = Longident.Lident s }, [])
