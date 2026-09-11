@@ -227,11 +227,24 @@ let explain_escape pre = function
           pp_doc pre
           (Style.as_inline_code type_expr_with_reserved_names) u
       )
-  | Errortrace.Constructor p -> Some(
-      doc_printf
-        "%a@,@[The type constructor@;<1 2>%a@ would escape its scope@]"
-        pp_doc pre pp_path p
-    )
+  | Errortrace.Constructor p ->
+      let is_existential =
+        let name = Path.last p in
+        String.length name > 0 && name.[0] = '$'
+      in
+      Some(
+        if is_existential then
+          doc_printf
+            "%a@,@[The type constructor@;<1 2>%a@ would escape its scope@]@,\
+             @[<hov>Hint: If this occurs in a recursive function handling existential effect\
+             @ callbacks, consider adding an explicit polymorphic recursion annotation,\
+             @ e.g.: let rec fn : 'e. (...) -> ... = fun ...@]"
+            pp_doc pre pp_path p
+        else
+          doc_printf
+            "%a@,@[The type constructor@;<1 2>%a@ would escape its scope@]"
+            pp_doc pre pp_path p
+      )
   | Errortrace.Module_type p -> Some(
       doc_printf
         "%a@,@[The module type@;<1 2>%a@ would escape its scope@]"
