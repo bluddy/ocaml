@@ -75,7 +75,7 @@ module Deep : sig
       is the value handler, [exnc] handles exceptions, and [effc] handles the
       effects performed by the computation enclosed by the handler. *)
 
-  val match_with: ('c -> 'a) -> 'c -> ('a,'b) handler -> 'b
+  val match_with: ('c -['e]-> 'a) -> 'c -> ('a,'b) handler -> 'b
   (** [match_with f v h] runs the computation [f v] in the handler [h]. *)
 
   type 'a effect_handler =
@@ -84,7 +84,7 @@ module Deep : sig
       [fun x -> x] and an exception handler that raises any exception
       [fun e -> raise e]. *)
 
-  val try_with: ('b -> 'a) -> 'b -> 'a effect_handler -> 'a
+  val try_with: ('b -['e]-> 'a) -> 'b -> 'a effect_handler -> 'a
   (** [try_with f v h] runs the computation [f v] under the handler [h]. *)
 
   external get_callstack :
@@ -101,7 +101,7 @@ module Shallow : sig
   (** [('a,'b) continuation] is a delimited continuation that expects a ['a]
       value and returns a ['b] value. *)
 
-  val fiber : ('a -> 'b) -> ('a, 'b) continuation
+  val fiber : ('a -['e]-> 'b) -> ('a, 'b) continuation
   (** [fiber f] constructs a continuation that runs the computation [f]. *)
 
   type ('a,'b) handler =

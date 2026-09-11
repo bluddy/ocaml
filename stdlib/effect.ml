@@ -39,8 +39,8 @@ let _ = Callback.register_exception "Effect.Continuation_already_resumed"
 type ('a, 'b) stack [@@immediate]
 
 external resume :
-  ('a, 'b) stack -> ('c -> 'a) -> 'c -> 'b = "%resume"
-external runstack : ('a, 'b) stack -> ('c -> 'a) -> 'c -> 'b = "%runstack"
+  ('a, 'b) stack -> ('c -['e1]-> 'a) -> 'c -['e2]-> 'b = "%resume"
+external runstack : ('a, 'b) stack -> ('c -['e1]-> 'a) -> 'c -['e2]-> 'b = "%runstack"
 
 module Deep = struct
 
@@ -106,7 +106,7 @@ module Shallow = struct
     ('c t -> ('c, 'b) continuation -> 'b) ->
     ('a, 'b) stack = "caml_alloc_stack"
 
-  let fiber : type a b. (a -> b) -> (a, b) continuation = fun f ->
+  let fiber : type a b. (a -['e]-> b) -> (a, b) continuation = fun f ->
     let module M = struct type _ t += Initial_setup__ : a t end in
     let exception E of (a,b) continuation in
     let f' () = f (perform M.Initial_setup__) in

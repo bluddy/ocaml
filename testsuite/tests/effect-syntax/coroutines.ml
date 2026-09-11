@@ -43,7 +43,7 @@ let restart () =
 
 (** The scheduler *)
 
-let rec corun (f: unit -> unit) =
+let rec corun : 'e. (unit -['e]-> unit) -> unit = fun f ->
   match f () with
   | () | exception Terminate -> restart ()
   | effect Spawn f, k -> suspend (continue k); corun f

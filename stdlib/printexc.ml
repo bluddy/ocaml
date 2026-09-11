@@ -17,7 +17,7 @@ open Printf
 
 type t = exn = ..
 
-let printers = Atomic.make []
+let printers : (exn -[]-> string option) list Atomic.t = Atomic.make []
 
 let locfmt = format_of_string "File \"%s\", line %d, characters %d-%d: %s"
 
@@ -324,7 +324,8 @@ let default_uncaught_exception_handler exn raw_backtrace =
     prerr_endline errors.(abs status);
   flush stderr
 
-let uncaught_exception_handler = ref default_uncaught_exception_handler
+let uncaught_exception_handler : (exn -[]-> raw_backtrace -[]-> unit) ref =
+  ref default_uncaught_exception_handler
 
 let set_uncaught_exception_handler fn = uncaught_exception_handler := fn
 

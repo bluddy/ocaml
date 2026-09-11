@@ -682,12 +682,50 @@ let check_poly_constraint spat env arg_label =
 (* Typing of patterns *)
 
 (* Simplified patterns for effect continuations *)
-let type_continuation_pat env expected_ty sp =
+let continuation_effect_table : (Ident.t, Types.effect_row) Hashtbl.t = Hashtbl.create 17
+
+let rec is_continuation_type env ty =
+  let ty = Ctype.expand_head env ty in
+  match get_desc ty with
+  | Tconstr (p, _, _) when Path.same p Predef.path_continuation || Path.last p = "continuation" -> true
+  | Texpand (_, {abbr_path; _}) when Path.same abbr_path Predef.path_continuation || Path.last abbr_path = "continuation" -> true
+  | Texpand (t, _) | Tlink t -> is_continuation_type env t
+  | Tpoly (t, _) -> is_continuation_type env t
+  | _ ->
+      let ty_repr = Transient_expr.type_expr (Transient_expr.repr ty) in
+      if ty_repr == ty then false
+      else is_continuation_type env ty_repr
+
+let rec get_arrow_desc env ty =
+  let ty = Ctype.expand_head env ty in
+  match get_desc ty with
+  | Tarrow _ as d -> Some d
+  | Texpand (t, _) | Tlink t -> get_arrow_desc env t
+  | Tpoly (t, _) -> get_arrow_desc env t
+  | _ ->
+      let ty_repr = Transient_expr.type_expr (Transient_expr.repr ty) in
+      if ty_repr == ty then None
+      else get_arrow_desc env ty_repr
+
+let find_continuation_effect env sarg =
+  match sarg.Parsetree.pexp_desc with
+  | Pexp_ident lid ->
+      begin try
+        let (path, _) = Env.find_value_by_name lid.txt env in
+        match path with
+        | Path.Pident id -> Hashtbl.find_opt continuation_effect_table id
+        | _ -> None
+      with Not_found -> None
+      end
+  | _ -> None
+
+let type_continuation_pat ?k_eff env expected_ty sp =
   let loc = sp.ppat_loc in
   match sp.ppat_desc with
   | Ppat_any -> None
   | Ppat_var name ->
       let id = Ident.create_local name.txt in
+      Option.iter (fun eff -> Hashtbl.add continuation_effect_table id eff) k_eff;
       let desc =
         { cont_id = id; cont_loc = loc; cont_type = expected_ty;
           cont_uid = Uid.mk ~current_unit:(Env.get_current_unit ()); }
@@ -3086,13 +3124,14 @@ let is_prim ~name funct =
 
 type ambient_scope = {
   amb_row : Types.effect_row;
+  amb_param_tys : Types.type_expr list;
 }
 
 let ambient_effect_stack = ref ([] : ambient_scope list)
 
-let push_ambient_scope () =
+let push_ambient_scope ?(param_tys=[]) () =
   let row = Btype.fresh_ambient_row_var () in
-  let scope = { amb_row = row } in
+  let scope = { amb_row = row; amb_param_tys = param_tys } in
   ambient_effect_stack := scope :: !ambient_effect_stack;
   scope
 
@@ -3111,16 +3150,6 @@ let current_ambient_scope () =
 let is_pure_effect_row eff =
   let r = Types.effect_row_repr eff in
   r.er_closed && r.er_fields = []
-
-let emit_ambient_effect env eff =
-  if not (is_pure_effect_row eff) then begin
-    match current_ambient_scope () with
-    | None -> ()
-    | Some scope ->
-        try
-          Ctype.unify_effect_rows env scope.amb_row eff
-        with Ctype.Unify _ -> ()
-  end
 
 let collect_row_variables param_tys =
   let row_vars = ref TypeSet.empty in
@@ -3158,14 +3187,45 @@ let collect_row_variables param_tys =
   List.iter iter_type param_tys;
   !row_vars
 
+let emit_ambient_effect env eff =
+  if is_pure_effect_row eff then ()
+  else begin
+    let r = Types.effect_row_repr eff in
+    match current_ambient_scope () with
+    | None -> ()
+    | Some scope ->
+        if r.er_fields <> [] then begin
+          let needed_row = Btype.new_effect_row ~closed:false r.er_fields in
+          try
+            Ctype.unify_effect_rows env scope.amb_row needed_row
+          with Ctype.Unify _ -> ()
+        end;
+        if not r.er_closed then begin
+          let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
+          match get_desc more with
+          | Tvar _ ->
+              let param_vars = collect_row_variables scope.amb_param_tys in
+              if TypeSet.mem more param_vars then begin
+                let amb_r = Types.effect_row_repr scope.amb_row in
+                if not amb_r.er_closed then begin
+                  let amb_more = Transient_expr.type_expr (Transient_expr.repr amb_r.er_more) in
+                  if not (Types.eq_type amb_more more) then
+                    try Ctype.unify env amb_more more with Ctype.Unify _ -> ()
+                end
+              end
+          | _ -> ()
+        end
+  end
+
 let finalize_ambient_scope env ?(param_tys=[]) scope =
   let r = Types.effect_row_repr scope.amb_row in
   if r.er_closed then
     scope.amb_row
   else
-    let param_row_vars = collect_row_variables param_tys in
+    let effective_param_tys = if param_tys <> [] then param_tys else scope.amb_param_tys in
+    let param_row_vars = collect_row_variables effective_param_tys in
     let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
-    if TypeSet.mem more param_row_vars then
+    if TypeSet.mem more param_row_vars || get_level more < get_current_level () then
       scope.amb_row
     else begin
       let closed_row = Btype.new_effect_row ~closed:true r.er_fields in
@@ -3177,6 +3237,7 @@ let finalize_ambient_scope env ?(param_tys=[]) scope =
     end
 
 let current_body_effect = ref (None : Types.effect_row option)
+let delayed_apply_effects = ref ([] : Types.effect_row list)
 
 (* Collecting arguments for function applications. *)
 
@@ -3421,11 +3482,25 @@ let collect_unknown_apply_args env funct ty_fun0 rev_args sargs =
                   let eff = Btype.fresh_ambient_row_var () in
                   unify env ty_fun
                     (newty (Tarrow(lbl,ty_param,ty_res,commu_var (), eff)));
-                  emit_ambient_effect env eff;
+                  delayed_apply_effects := eff :: !delayed_apply_effects;
                   (`Arrow ty_arg, ty_res)
               | Tarrow (l, ty_param, ty_res, _, eff)
                 when labels_match ~param:l ~arg:lbl ->
-                  emit_ambient_effect env eff;
+                  if not (is_prim ~name:"%runstack" funct || is_prim ~name:"%resume" funct) then
+                    delayed_apply_effects := eff :: !delayed_apply_effects;
+                  begin match find_continuation_effect env sarg with
+                  | Some k_eff ->
+                      if is_continuation_type env ty_param then begin
+                        match get_arrow_desc env ty_res with
+                        | Some (Tarrow (_, _, _, _, ret_eff)) ->
+                            begin try
+                              Ctype.unify_effect_rows env ret_eff k_eff
+                            with Ctype.Unify _ -> ()
+                            end
+                        | _ -> ()
+                      end
+                  | None -> ()
+                  end;
                   (`Arrow (tpoly_get_mono ty_param), ty_res)
               | Tfunctor (l, id, pack, ty_res)
                 when labels_match ~param:l ~arg:lbl ->
@@ -3588,7 +3663,22 @@ let collect_apply_args env funct ignore_labels ty_fun ty_fun0 sargs =
         match arrow_kind with
         | `Arrow (ty_arg, ty_ret, ty_arg0, ty_ret0, eff) ->
             if Option.is_some arg_opt then
-              emit_ambient_effect env eff;
+              if not (is_prim ~name:"%runstack" funct || is_prim ~name:"%resume" funct) then
+                delayed_apply_effects := eff :: !delayed_apply_effects;
+            Option.iter (fun (sarg, _) ->
+              match find_continuation_effect env sarg with
+              | Some k_eff ->
+                  if is_continuation_type env ty_arg then begin
+                    match get_arrow_desc env ty_ret with
+                    | Some (Tarrow (_, _, _, _, ret_eff)) ->
+                        begin try
+                          Ctype.unify_effect_rows env ret_eff k_eff
+                        with Ctype.Unify _ -> ()
+                        end
+                    | _ -> ()
+                  end
+              | None -> ()
+            ) arg_opt;
             let arg = collect_arrow_arg ~may_warn ~funct ~optional ~sargs
                                         ~ty_arg ~ty_arg0 ~lv arg_opt
             in
@@ -4891,10 +4981,6 @@ and type_expect_
         exp_env = env }
       end
   | Pexp_match(sarg, caselist) ->
-      let arg =
-        with_local_level_generalize (fun () -> type_exp env sarg)
-          ~before_generalize:(may_lower_contravariant env)
-      in
       let rec split_cases valc effc conts = function
         | [] -> List.rev valc, List.rev effc, List.rev conts
         | {pc_lhs = {ppat_desc=Ppat_effect(p1, p2)}} as c :: rest ->
@@ -4906,6 +4992,31 @@ and type_expect_
       let val_caselist, eff_caselist, eff_conts =
         split_cases [] [] [] caselist
       in
+      let has_eff_cases = eff_caselist <> [] in
+      let is_shallow =
+        has_eff_cases &&
+        List.exists (fun a ->
+          a.Parsetree.attr_name.txt = "shallow" ||
+          a.Parsetree.attr_name.txt = "effect.shallow"
+        ) sexp.pexp_attributes
+      in
+      let arg, r_arg =
+        if has_eff_cases then begin
+          let arg_scope = push_ambient_scope () in
+          let a =
+            with_local_level_generalize (fun () -> type_exp env sarg)
+              ~before_generalize:(may_lower_contravariant env)
+          in
+          let _ = pop_ambient_scope () in
+          a, arg_scope.amb_row
+        end else begin
+          let a =
+            with_local_level_generalize (fun () -> type_exp env sarg)
+              ~before_generalize:(may_lower_contravariant env)
+          in
+          a, Btype.empty_pure_row ()
+        end
+      in
       if val_caselist = [] && eff_caselist <> [] then
         Error.log_or_raise loc env No_value_clauses;
       let val_cases, partial =
@@ -4913,11 +5024,59 @@ and type_expect_
           ~check_if_total:true loc val_caselist
       in
       let eff_cases =
-        match eff_caselist with
-        | [] -> []
-        | eff_caselist ->
-            type_effect_cases Value env ty_expected_explained loc eff_caselist
-              eff_conts
+        if not has_eff_cases then []
+        else begin
+          let rec collect_eff_labels pat =
+            match pat.Parsetree.ppat_desc with
+            | Ppat_construct (lid, _) -> [Longident.last lid.txt]
+            | Ppat_or (p1, p2) -> collect_eff_labels p1 @ collect_eff_labels p2
+            | Ppat_alias (p, _) -> collect_eff_labels p
+            | Ppat_open (_, p) -> collect_eff_labels p
+            | Ppat_constraint (p, _) -> collect_eff_labels p
+            | _ -> []
+          in
+          let rec is_universal_handler pat =
+            match pat.Parsetree.ppat_desc with
+            | Ppat_any | Ppat_var _ -> true
+            | Ppat_alias (p, _) -> is_universal_handler p
+            | Ppat_constraint (p, _) -> is_universal_handler p
+            | _ -> false
+          in
+          let universal =
+            List.exists (fun c -> is_universal_handler c.pc_lhs) eff_caselist
+          in
+          let handled_labels =
+            List.concat_map (fun c -> collect_eff_labels c.pc_lhs) eff_caselist
+          in
+          if handled_labels <> [] then begin
+            let handled_fields =
+              List.map (fun lbl -> (lbl, Types.eff_present)) handled_labels
+            in
+            let handled_row = Btype.new_effect_row handled_fields in
+            try Ctype.unify_effect_rows env r_arg handled_row
+            with Ctype.Unify _ -> ()
+          end;
+          let r_arg_repr = Types.effect_row_repr r_arg in
+          let remaining_fields =
+            if universal then []
+            else
+              List.filter (fun (lbl, _) ->
+                not (List.mem lbl handled_labels)
+              ) r_arg_repr.er_fields
+          in
+          let r_rem =
+            if universal && r_arg_repr.er_closed then
+              Btype.empty_pure_row ()
+            else
+              Types.create_effect_row ~fields:remaining_fields
+                ~more:r_arg_repr.er_more ~closed:r_arg_repr.er_closed
+          in
+          emit_ambient_effect env r_rem;
+          let k_eff = if is_shallow then r_arg else r_rem in
+          let k_res = if is_shallow then arg.exp_type else ty_expected in
+          type_effect_cases ~k_eff ~k_res Value env ty_expected_explained loc eff_caselist
+            eff_conts
+        end
       in
       if
         List.for_all (fun c -> pattern_needs_partial_application_check c.c_lhs)
@@ -4930,7 +5089,6 @@ and type_expect_
         exp_attributes = sexp.pexp_attributes;
         exp_env = env }
   | Pexp_try(sbody, caselist) ->
-      let body = type_expect env sbody ty_expected_explained in
       let rec split_cases exnc effc conts = function
         | [] -> List.rev exnc, List.rev effc, List.rev conts
         | {pc_lhs = {ppat_desc=Ppat_effect(p1, p2)}} as c :: rest ->
@@ -4942,16 +5100,83 @@ and type_expect_
       let exn_caselist, eff_caselist, eff_conts =
         split_cases [] [] [] caselist
       in
+      let has_eff_cases = eff_caselist <> [] in
+      let is_shallow =
+        has_eff_cases &&
+        List.exists (fun a ->
+          a.Parsetree.attr_name.txt = "shallow" ||
+          a.Parsetree.attr_name.txt = "effect.shallow"
+        ) sexp.pexp_attributes
+      in
+      let body, r_body =
+        if has_eff_cases then begin
+          let body_scope = push_ambient_scope () in
+          let b = type_expect env sbody ty_expected_explained in
+          let _ = pop_ambient_scope () in
+          b, body_scope.amb_row
+        end else begin
+          let b = type_expect env sbody ty_expected_explained in
+          b, Btype.empty_pure_row ()
+        end
+      in
       let exn_cases, _ =
         type_cases Value env Predef.type_exn ty_expected_explained
           ~check_if_total:false loc exn_caselist
       in
       let eff_cases =
-        match eff_caselist with
-        | [] -> []
-        | eff_caselist ->
-            type_effect_cases Value env ty_expected_explained loc eff_caselist
-              eff_conts
+        if not has_eff_cases then []
+        else begin
+          let rec collect_eff_labels pat =
+            match pat.Parsetree.ppat_desc with
+            | Ppat_construct (lid, _) -> [Longident.last lid.txt]
+            | Ppat_or (p1, p2) -> collect_eff_labels p1 @ collect_eff_labels p2
+            | Ppat_alias (p, _) -> collect_eff_labels p
+            | Ppat_open (_, p) -> collect_eff_labels p
+            | Ppat_constraint (p, _) -> collect_eff_labels p
+            | _ -> []
+          in
+          let rec is_universal_handler pat =
+            match pat.Parsetree.ppat_desc with
+            | Ppat_any | Ppat_var _ -> true
+            | Ppat_alias (p, _) -> is_universal_handler p
+            | Ppat_constraint (p, _) -> is_universal_handler p
+            | _ -> false
+          in
+          let universal =
+            List.exists (fun c -> is_universal_handler c.pc_lhs) eff_caselist
+          in
+          let handled_labels =
+            List.concat_map (fun c -> collect_eff_labels c.pc_lhs) eff_caselist
+          in
+          if handled_labels <> [] then begin
+            let handled_fields =
+              List.map (fun lbl -> (lbl, Types.eff_present)) handled_labels
+            in
+            let handled_row = Btype.new_effect_row handled_fields in
+            try Ctype.unify_effect_rows env r_body handled_row
+            with Ctype.Unify _ -> ()
+          end;
+          let r_body_repr = Types.effect_row_repr r_body in
+          let remaining_fields =
+            if universal then []
+            else
+              List.filter (fun (lbl, _) ->
+                not (List.mem lbl handled_labels)
+              ) r_body_repr.er_fields
+          in
+          let r_rem =
+            if universal && r_body_repr.er_closed then
+              Btype.empty_pure_row ()
+            else
+              Types.create_effect_row ~fields:remaining_fields
+                ~more:r_body_repr.er_more ~closed:r_body_repr.er_closed
+          in
+          emit_ambient_effect env r_rem;
+          let k_eff = if is_shallow then r_body else r_rem in
+          let k_res = if is_shallow then body.exp_type else ty_expected in
+          type_effect_cases ~k_eff ~k_res Value env ty_expected_explained loc eff_caselist
+            eff_conts
+        end
       in
       re {
         exp_desc = Texp_try(body, exn_cases, eff_cases);
@@ -6197,6 +6422,8 @@ and type_function
                    && Typing_recovery.is_recoverable exn ->
           Typing_recovery.erroneous_type_register ty_expected
       in
+      if rest = [] then
+        ignore (finalize_ambient_scope env ~param_tys:(ty_arg_mono :: param_tys) { amb_row = eff; amb_param_tys = ty_arg_mono :: param_tys });
       (* This is quadratic, as it extracts all of the parameters from an arrow
          type for each parameter that's added. Now that functions are n-ary,
          there might be an opportunity to improve this.
@@ -6269,7 +6496,7 @@ and type_function
       in
       exp_type, param :: params, body, [], contains_gadt
   | [] ->
-    let scope = push_ambient_scope () in
+    let scope = push_ambient_scope ~param_tys () in
     let exp_type, body =
       try
         match body with
@@ -6339,8 +6566,7 @@ and type_function
         raise exn
      in
      ignore (pop_ambient_scope ());
-     let eff = finalize_ambient_scope env ~param_tys scope in
-     current_body_effect := Some eff;
+     current_body_effect := Some scope.amb_row;
      (* [No_gadt] is fine because this return value is only meant to indicate
         whether [params] (here, the empty list) contains any GADT, not whether
         the body is a [Tfunction_cases] whose patterns include a GADT.
@@ -7052,6 +7278,8 @@ and type_application env app_loc funct sargs =
            [f n]
          with
            [f : a:bar -> ?opt:baz -> int -> unit] *)
+      let prev_delayed = !delayed_apply_effects in
+      delayed_apply_effects := [];
       let ty_ret, args =
         collect_apply_args env funct ignore_labels ty (instance ty) sargs
       in
@@ -7061,6 +7289,9 @@ and type_application env app_loc funct sargs =
                   (Optional "opt", Arg (Eliminated_optional_arg baz));
                   (Nolabel, Arg (Known_arg n))]] *)
       let args = List.map (fun arg -> type_apply_arg ~app_loc env arg) args in
+      let delayed = !delayed_apply_effects in
+      delayed_apply_effects := prev_delayed;
+      List.iter (emit_ambient_effect env) delayed;
       (* example: type-check [n] and generate [None] for [?opt].
          [args] becomes [(Label "a", Omitted bar);
                          (Optional "opt", Arg None);
@@ -7539,7 +7770,7 @@ and type_function_cases_expect
       split_function_ty env ty_expected ~arg_label:Nolabel
         ~first ~in_function ~has_poly:false
     in
-    let scope = push_ambient_scope () in
+    let scope = push_ambient_scope ~param_tys:[ty_arg_mono] () in
     let cases, partial =
       try
         type_cases Value env ty_arg_mono (mk_expected ty_ret)
@@ -7563,10 +7794,11 @@ and type_function_cases_expect
   end
 
 and type_effect_cases
-    : type k . k pattern_category -> _ -> _ -> _ -> Parsetree.case list -> _
+    : type k . ?k_eff:Types.effect_row -> ?k_res:Types.type_expr -> k pattern_category -> _ -> _ -> _ -> Parsetree.case list -> _
                -> k case list
-  = fun category env ty_res_explained loc caselist conts ->
+  = fun ?k_eff ?k_res category env ty_res_explained loc caselist conts ->
       let { ty = ty_res; explanation = _ } = ty_res_explained in
+      let ty_k_res = Option.value ~default:ty_res k_res in
       (* remember original level *)
       with_local_level begin fun () ->
         (* Create a locally abstract type for effect type. *)
@@ -7579,9 +7811,9 @@ and type_effect_cases
           let ty_eff = newgenty (Tconstr (Path.Pident id,[],ref Mnil)) in
           new_env,
           Predef.type_eff ty_eff,
-          Predef.type_continuation ty_eff ty_res
+          Predef.type_continuation ty_eff ty_k_res
         in
-        let conts = List.map (type_continuation_pat env ty_cont) conts in
+        let conts = List.map (type_continuation_pat ?k_eff env ty_cont) conts in
         let cases, _ = type_cases category new_env ty_arg
           ty_res_explained ~conts ~check_if_total:false loc caselist
         in

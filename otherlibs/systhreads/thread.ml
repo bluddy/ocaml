@@ -35,7 +35,7 @@ let[@inline never] check_memprof_cb () = ref ()
 
 let default_uncaught_exception_handler = thread_uncaught_exception
 
-let uncaught_exception_handler = ref default_uncaught_exception_handler
+let uncaught_exception_handler : (exn -[]-> unit) ref = ref default_uncaught_exception_handler
 
 let set_uncaught_exception_handler fn = uncaught_exception_handler := fn
 

@@ -468,45 +468,6 @@ let type_open :
     ref =
   ref (fun ?used_slot:_ _ -> assert false)
 
-let rec contains_arrow env styp =
-  match styp.Parsetree.ptyp_desc with
-  | Ptyp_arrow _ -> true
-  | Ptyp_tuple stl ->
-      List.exists (fun (_, t) -> contains_arrow env t) stl
-  | Ptyp_poly (_, t) | Ptyp_alias (t, _) -> contains_arrow env t
-  | Ptyp_constr (lid, _) ->
-      begin try
-        let (_, decl) = Env.find_type_by_name lid.txt env in
-        match decl.type_manifest with
-        | Some ty ->
-            begin match get_desc ty with
-            | Tarrow _ -> true
-            | _ -> false
-            end
-        | None -> false
-      with Not_found -> false
-      end
-  | _ -> false
-
-let rec arrow_spine_has_callback env styp =
-  match styp.Parsetree.ptyp_desc with
-  | Ptyp_arrow (_, st1, st2, _) ->
-      contains_arrow env st1 || arrow_spine_has_callback env st2
-  | Ptyp_poly (_, t) | Ptyp_alias (t, _) -> arrow_spine_has_callback env t
-  | Ptyp_constr (lid, _) ->
-      begin try
-        let (_, decl) = Env.find_type_by_name lid.txt env in
-        match decl.type_manifest with
-        | Some ty ->
-            begin match get_desc ty with
-            | Tarrow _ -> true
-            | _ -> false
-            end
-        | None -> false
-      with Not_found -> false
-      end
-  | _ -> false
-
 let rec transl_type env ~policy ?(aliased=false) ?(allow_open_arrow=true) ?(ambient_row=None) ?(in_callback=false) ~row_context styp =
   let delayed () =
     Builtin_attributes.warning_scope styp.ptyp_attributes
@@ -555,15 +516,13 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
       match ambient_row with
       | Some _ as a -> a
       | None ->
-          if allow_open_arrow && not (TyVarEnv.is_fixed policy) &&
-             (contains_arrow env st1 || arrow_spine_has_callback env st2)
-          then
+          if allow_open_arrow && not (TyVarEnv.is_fixed policy) then
             Some (Btype.fresh_ambient_row_var ())
           else
             None
     in
-    let arg_cty = transl_type env ~policy ~allow_open_arrow:true ~ambient_row:amb ~in_callback:true ~row_context st1 in
-    let ret_cty = transl_type env ~policy ~allow_open_arrow:true ~ambient_row:amb ~in_callback ~row_context st2 in
+    let arg_cty = transl_type env ~policy ~allow_open_arrow ~ambient_row:amb ~in_callback:true ~row_context st1 in
+    let ret_cty = transl_type env ~policy ~allow_open_arrow ~ambient_row:amb ~in_callback ~row_context st2 in
     let arg_ty = arg_cty.ctyp_type in
     let arg_ty =
       if Btype.is_Tpoly arg_ty then arg_ty else newmono arg_ty
@@ -583,12 +542,20 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
       | Tarrow _ -> true
       | _ -> false
     in
+    let rec is_continuation ty =
+      let ty = Ctype.expand_head env ty in
+      match get_desc ty with
+      | Tconstr (p, _, _) when Path.same p Predef.path_continuation || Path.last p = "continuation" -> true
+      | Texpand (_, {abbr_path; _}) when Path.same abbr_path Predef.path_continuation || Path.last abbr_path = "continuation" -> true
+      | Texpand (t, _) | Tlink t -> is_continuation t
+      | _ -> false
+    in
     let eff =
       match eff_opt with
       | None ->
           begin match amb with
           | Some r ->
-              if in_callback || not is_ret_arrow then r
+              if in_callback || (not is_ret_arrow && not (is_continuation (Ctype.expand_head env ret_cty.ctyp_type))) then r
               else Btype.empty_pure_row ()
           | None ->
               Btype.empty_pure_row ()
@@ -635,7 +602,7 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
       (Misc.repeated_label stl);
     let in_cb = in_callback || ambient_row <> None in
     let ctys =
-      List.map (fun (l, t) -> l, transl_type env ~policy ~allow_open_arrow:true ~ambient_row ~in_callback:in_cb ~row_context t) stl
+      List.map (fun (l, t) -> l, transl_type env ~policy ~allow_open_arrow ~ambient_row ~in_callback:in_cb ~row_context t) stl
     in
     let ty =
       newty (Ttuple (List.map (fun (l, ctyp) -> l, ctyp.ctyp_type) ctys))
@@ -652,7 +619,11 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
       if List.length stl <> decl.type_arity then
         Error.log_and_raise styp.ptyp_loc env
           (Type_arity_mismatch(lid.txt, decl.type_arity, List.length stl));
-      let args = List.map (transl_type env ~policy ~allow_open_arrow:false ~row_context) stl in
+      let is_eff = Path.same path Predef.path_eff || Path.last path = "eff"
+                   || Path.same path Predef.path_continuation || Path.last path = "continuation" in
+      let allow_open_arrow = allow_open_arrow && is_eff in
+      let ambient_row = if is_eff then ambient_row else None in
+      let args = List.map (transl_type env ~policy ~allow_open_arrow ~ambient_row ~row_context) stl in
       let params = instance_list decl.type_params in
       let unify_param =
         match decl.type_manifest with
@@ -1034,13 +1005,13 @@ let rec make_fixed_univars mark ty =
 let make_fixed_univars ty =
   with_type_mark (fun mark -> make_fixed_univars mark ty)
 
-let transl_type env policy styp =
-  transl_type env ~policy ~row_context:[] styp
+let transl_type ?(allow_open_arrow=true) env policy styp =
+  transl_type env ~policy ~allow_open_arrow ~row_context:[] styp
 
-let transl_simple_type env ?univars ~closed styp =
+let transl_simple_type ?(allow_open_arrow=false) env ?univars ~closed styp =
   TyVarEnv.reset_locals ?univars ();
   let policy = TyVarEnv.(if closed then fixed_policy else extensible_policy) in
-  let typ = transl_type env policy styp in
+  let typ = transl_type ~allow_open_arrow env policy styp in
   TyVarEnv.globalize_used_variables policy env ();
   make_fixed_univars typ.ctyp_type;
   typ
@@ -1060,12 +1031,12 @@ let transl_simple_type_univars env styp =
     { typ with ctyp_type =
         instance (Btype.newgenty (Tpoly (typ.ctyp_type, univs))) }
 
-let transl_simple_type_delayed env styp =
+let transl_simple_type_delayed ?(allow_open_arrow=true) env styp =
   TyVarEnv.reset_locals ();
   let typ, force =
     with_local_level_generalize begin fun () ->
       let policy = TyVarEnv.extensible_policy in
-      let typ = transl_type env policy styp in
+      let typ = transl_type ~allow_open_arrow env policy styp in
       make_fixed_univars typ.ctyp_type;
       (* This brings the used variables to the global level, but doesn't link
          them to their other occurrences just yet. This will be done when
@@ -1084,7 +1055,7 @@ let transl_type_scheme env styp =
        with_local_level_generalize begin fun () ->
          TyVarEnv.reset ();
          let univars = TyVarEnv.make_poly_univars vars in
-         let typ = transl_simple_type env ~univars ~closed:true st in
+         let typ = transl_simple_type ~allow_open_arrow:true env ~univars ~closed:true st in
          (univars, typ)
        end
      in
@@ -1096,7 +1067,7 @@ let transl_type_scheme env styp =
        ctyp_attributes = styp.ptyp_attributes }
   | _ ->
       with_local_level_generalize
-        (fun () -> TyVarEnv.reset (); transl_simple_type env ~closed:false styp)
+        (fun () -> TyVarEnv.reset (); transl_simple_type ~allow_open_arrow:true env ~closed:false styp)
 
 
 (* Error report *)

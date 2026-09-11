@@ -245,7 +245,7 @@ let make_params env params =
   in
     List.map make_param params
 
-let transl_labels env univars closed lbls =
+let transl_labels ?(allow_open_arrow=false) env univars closed lbls =
   assert (lbls <> []);
   let all_labels = ref String.Set.empty in
   List.iter
@@ -257,50 +257,51 @@ let transl_labels env univars closed lbls =
   let mk {pld_name=name;pld_mutable=mut;pld_type=arg;pld_loc=loc;
           pld_attributes=attrs} =
     Builtin_attributes.warning_scope attrs
-      (fun () ->
-         let arg = Ast_helper.Typ.force_poly arg in
-         let cty = transl_simple_type env ?univars ~closed arg in
-         let is_atomic = Builtin_attributes.has_atomic attrs in
-         let is_mutable = match mut with Mutable -> true | Immutable -> false in
-         if is_atomic && not is_mutable then
-           Error.log_and_raise loc (Atomic_field_must_be_mutable name.txt);
-         {ld_id = Ident.create_local name.txt;
-          ld_name = name;
-          ld_uid = Uid.mk ~current_unit:(Env.get_current_unit ());
-          ld_mutable = mut;
-          ld_atomic = if is_atomic then Atomic else Nonatomic;
-          ld_type = cty; ld_loc = loc; ld_attributes = attrs}
-      )
-  in
-  let lbls = List.map mk lbls in
-  let lbls' =
-    List.map
-      (fun ld ->
-         let ty = ld.ld_type.ctyp_type in
-         let ty = match get_desc ty with Tpoly(t,[]) -> t | _ -> ty in
-         {Types.ld_id = ld.ld_id;
-          ld_mutable = ld.ld_mutable;
-          ld_atomic = ld.ld_atomic;
-          ld_type = ty;
-          ld_loc = ld.ld_loc;
-          ld_attributes = ld.ld_attributes;
-          ld_uid = ld.ld_uid;
-         }
-      )
-      lbls in
-  lbls, lbls'
+       (fun () ->
+          let arg = Ast_helper.Typ.force_poly arg in
+          let cty = transl_simple_type ~allow_open_arrow env ?univars ~closed arg in
+          let is_atomic = Builtin_attributes.has_atomic attrs in
+          let is_mutable = match mut with Mutable -> true | Immutable -> false in
+          if is_atomic && not is_mutable then
+            Error.log_and_raise loc (Atomic_field_must_be_mutable name.txt);
+          {ld_id = Ident.create_local name.txt;
+           ld_name = name;
+           ld_uid = Uid.mk ~current_unit:(Env.get_current_unit ());
+           ld_mutable = mut;
+           ld_atomic = if is_atomic then Atomic else Nonatomic;
+           ld_type = cty; ld_loc = loc; ld_attributes = attrs}
+       )
+   in
+   let lbls = List.map mk lbls in
+   let lbls' =
+     List.map
+       (fun ld ->
+          let ty = ld.ld_type.ctyp_type in
+          let ty = match get_desc ty with Tpoly(t,[]) -> t | _ -> ty in
+          {Types.ld_id = ld.ld_id;
+           ld_mutable = ld.ld_mutable;
+           ld_atomic = ld.ld_atomic;
+           ld_type = ty;
+           ld_loc = ld.ld_loc;
+           ld_attributes = ld.ld_attributes;
+           ld_uid = ld.ld_uid;
+          }
+       )
+       lbls in
+   lbls, lbls'
 
-let transl_constructor_arguments env univars closed = function
+let transl_constructor_arguments ?(allow_open_arrow=false) env univars closed = function
   | Pcstr_tuple l ->
-      let l = List.map (transl_simple_type env ?univars ~closed) l in
+      let l = List.map (transl_simple_type ~allow_open_arrow env ?univars ~closed) l in
       Types.Cstr_tuple (List.map (fun t -> t.ctyp_type) l),
       Cstr_tuple l
   | Pcstr_record l ->
-      let lbls, lbls' = transl_labels env univars closed l in
+      let lbls, lbls' = transl_labels ~allow_open_arrow env univars closed l in
       Types.Cstr_record lbls',
       Cstr_record lbls
 
 let make_constructor env loc type_path type_params svars sargs sret_type =
+  let is_eff = Path.same type_path Predef.path_eff || Path.last type_path = "eff" in
   match sret_type with
   | None ->
       let args, targs =
@@ -320,7 +321,7 @@ let make_constructor env loc type_path type_params svars sargs sret_type =
             TyVarEnv.make_poly_univars (List.map (fun v -> v.txt) svars) in
           let univars = if closed then Some univar_list else None in
           let args, targs =
-            transl_constructor_arguments env univars closed sargs
+            transl_constructor_arguments ~allow_open_arrow:is_eff env univars closed sargs
           in
           let tret_type =
             transl_simple_type env ?univars ~closed sret_type in

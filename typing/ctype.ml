@@ -4116,7 +4116,17 @@ let unify env ty1 ty2 =
   unify_pairs env ty1 ty2 []
 
 let unify_effect_rows env row1 row2 =
-  unify_effect_rows (Expression {env; in_subst = false}) row1 row2
+  try
+    unify_effect_rows (Expression {env; in_subst = false}) row1 row2
+  with Unify_trace trace ->
+    let trace =
+      if trace <> [] then trace
+      else [Errortrace.Diff {
+        got = newgenty (Teffect_row row1);
+        expected = newgenty (Teffect_row row2);
+      }]
+    in
+    raise (Unify (expand_to_unification_error env trace))
 
 (* Lower the level of a type to the current level *)
 let enforce_current_level env ty = unify_var env (newvar ()) ty

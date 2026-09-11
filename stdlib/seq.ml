@@ -551,7 +551,7 @@ and sorted_merge1 cmp x xs y ys =
   else
     Cons (y, sorted_merge1l cmp x xs ys)
 
-let sorted_merge cmp xs ys () =
+let sorted_merge cmp (xs : 'a t) (ys : 'a t) : 'a t = fun () ->
   match xs(), ys() with
     | Nil, Nil ->
         Nil

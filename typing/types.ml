@@ -860,18 +860,16 @@ let match_row_field ~present ~absent ~either (f : row_field) =
 let create_effect_row ~fields ~more ~closed =
   { er_fields = fields; er_more = more; er_closed = closed }
 
-let rec effect_row_fields row =
-  match get_desc row.er_more with
-  | Teffect_row row' ->
-      row.er_fields @ effect_row_fields row'
-  | _ ->
-      row.er_fields
-
 let rec effect_row_repr row =
   match get_desc row.er_more with
   | Teffect_row row' ->
+      let merged_fields =
+        List.fold_left (fun acc (lbl, f) ->
+          if List.mem_assoc lbl acc then acc else acc @ [lbl, f]
+        ) row.er_fields row'.er_fields
+      in
       effect_row_repr {
-        er_fields = row.er_fields @ row'.er_fields;
+        er_fields = merged_fields;
         er_more = row'.er_more;
         er_closed = row'.er_closed;
       }
@@ -879,6 +877,9 @@ let rec effect_row_repr row =
       { row with er_closed = true }
   | _ ->
       row
+
+let effect_row_fields row =
+  (effect_row_repr row).er_fields
 
 let effect_row_more row =
   (effect_row_repr row).er_more

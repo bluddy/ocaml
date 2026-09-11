@@ -178,11 +178,11 @@ val wait_signal : int list -> int
 
 (** {1 Uncaught exceptions} *)
 
-val default_uncaught_exception_handler : exn -> unit
+val default_uncaught_exception_handler : exn -[]-> unit
 (** [Thread.default_uncaught_exception_handler] will print the thread's id,
     exception and backtrace (if available). *)
 
-val set_uncaught_exception_handler : (exn -> unit) -> unit
+val set_uncaught_exception_handler : (exn -[]-> unit) -> unit
 (** [Thread.set_uncaught_exception_handler fn] registers [fn] as the handler
     for uncaught exceptions.
 
