@@ -1,0 +1,5 @@
+Purity: 11 9 20
+Subsumption :=: 52
+Transformer: done, [1; 2; 3]
+Exclusion: pure_no_yield
+Deep handler: 100

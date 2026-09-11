@@ -503,6 +503,7 @@ val subtype: Env.t -> type_expr -> type_expr -> unit -> unit
            It accumulates the constraints the type variables must
            enforce and returns a function that enforces this
            constraints. *)
+val effect_subsume: Env.t -> type_expr -> type_expr -> unit
 
 (* Operations on class signatures *)
 
@@ -548,6 +549,7 @@ val hide_private_methods : class_signature -> unit
 val reveal_private_methods : Env.t -> class_signature -> unit
 
 val close_class_signature : Env.t -> class_signature -> bool
+val close_unconstrained_effect_rows : Env.t -> type_expr list -> class_signature -> unit
 
 exception Nondep_cannot_erase of Ident.t
 

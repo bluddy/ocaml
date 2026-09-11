@@ -507,6 +507,7 @@ let remove_option typ =
     | Tfield _
     | Tnil
     | Tvariant _
+    | Teffect_row _
     | Tpackage _ -> t
     | Tlink t2 -> trim (get_desc t2)
     | Texpand _

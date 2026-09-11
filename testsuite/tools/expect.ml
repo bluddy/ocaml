@@ -712,7 +712,7 @@ let () =
 (* Early disabling of colors in any output *)
   let () =
     Clflags.color := Some Misc.Color.Never;
-    Misc.Style.(setup @@ Some Never)
+    Misc.Style.(setup @@ Some Misc.Color.Never)
   in
   try
     Arg.parse args main usage;

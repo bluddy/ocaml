@@ -746,7 +746,11 @@ let unify_exp_types ?sexp loc env ty expected_ty =
     unify env ty expected_ty
   with
     Unify err ->
-      Error.log_and_raise loc env (Expr_type_clash(err, None, sexp))
+      begin try
+        Ctype.effect_subsume env ty expected_ty
+      with _ ->
+        Error.log_and_raise loc env (Expr_type_clash(err, None, sexp))
+      end
   | Tags(l1,l2) ->
       Typetexp.Error.log_and_raise loc env (Typetexp.Variant_tags (l1, l2))
 
@@ -3225,7 +3229,7 @@ let finalize_ambient_scope env ?(param_tys=[]) scope =
     let effective_param_tys = if param_tys <> [] then param_tys else scope.amb_param_tys in
     let param_row_vars = collect_row_variables effective_param_tys in
     let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
-    if TypeSet.mem more param_row_vars || get_level more < get_current_level () then
+    if TypeSet.mem more param_row_vars then
       scope.amb_row
     else begin
       let closed_row = Btype.new_effect_row ~closed:true r.er_fields in
@@ -6566,7 +6570,8 @@ and type_function
         raise exn
      in
      ignore (pop_ambient_scope ());
-     current_body_effect := Some scope.amb_row;
+     let eff = finalize_ambient_scope env ~param_tys scope in
+     current_body_effect := Some eff;
      (* [No_gadt] is fine because this return value is only meant to indicate
         whether [params] (here, the empty list) contains any GADT, not whether
         the body is a [Tfunction_cases] whose patterns include a GADT.

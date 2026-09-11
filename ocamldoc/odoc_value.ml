@@ -77,6 +77,7 @@ let parameter_list_from_arrows typ =
     | Tnil
     | Tunivar _
     | Tpackage _
+    | Teffect_row _
     | Tvariant _ ->
         []
     | Tlink _

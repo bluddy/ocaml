@@ -517,7 +517,8 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
       | Some _ as a -> a
       | None ->
           if allow_open_arrow && not (TyVarEnv.is_fixed policy) then
-            Some (Btype.fresh_ambient_row_var ())
+            let v = TyVarEnv.new_var policy in
+            Some (Types.create_effect_row ~fields:[] ~more:v ~closed:false)
           else
             None
     in
@@ -590,7 +591,7 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
                   if row.erow_closed then
                     Btype.newgenty Tnil
                   else
-                    newvar ()
+                    TyVarEnv.new_var policy
             in
             Types.create_effect_row ~fields ~more ~closed:row.erow_closed
     in
@@ -819,7 +820,7 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
         with_local_level_generalize begin fun () ->
           let new_univars = TyVarEnv.make_poly_univars vars in
           let cty = TyVarEnv.with_univars new_univars begin fun () ->
-            transl_type env ~policy ~row_context st
+            transl_type env ~policy ~allow_open_arrow ~row_context st
           end in
           (new_univars, cty)
         end
@@ -904,7 +905,7 @@ and transl_fields env ~policy ~row_context o fields =
     | Otag (s, ty1) -> begin
         let ty1 =
           Builtin_attributes.warning_scope of_attributes
-            (fun () -> transl_type env ~policy ~row_context
+            (fun () -> transl_type env ~policy ~allow_open_arrow:false ~row_context
                 (Ast_helper.Typ.force_poly ty1))
         in
         let field = OTtag (s, ty1) in
@@ -1022,7 +1023,7 @@ let transl_simple_type_univars env styp =
     TyVarEnv.collect_univars begin fun () ->
       with_local_level_generalize begin fun () ->
         let policy = TyVarEnv.univars_policy in
-        let typ = transl_type env policy styp in
+        let typ = transl_type ~allow_open_arrow:false env policy styp in
         TyVarEnv.globalize_used_variables policy env ();
         typ
       end

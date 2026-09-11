@@ -355,7 +355,7 @@ let rec class_type_field env sign self_scope ctf =
                  ) :: !delayed_meth_specs;
                Tctf_method (lab, priv, virt, returned_cty)
            | _ ->
-               let cty = transl_simple_type env ~closed:false sty in
+               let cty = transl_simple_type env ~allow_open_arrow:false ~closed:false sty in
                let ty = cty.ctyp_type in
                add_method loc env lab priv virt ty sign;
                Tctf_method (lab, priv, virt, cty))
@@ -750,11 +750,11 @@ let rec class_field_first_pass self_loc cl_num final sign self_scope acc cf =
            { acc with rev_fields; val_env; par_env;
                       concrete_vals; local_vals; vars })
 
-  | Pcf_method (label, priv, Cfk_virtual sty) ->
+   | Pcf_method (label, priv, Cfk_virtual sty) ->
       with_attrs
         (fun () ->
            let sty = Ast_helper.Typ.force_poly sty in
-           let cty = transl_simple_type val_env ~closed:false sty in
+           let cty = transl_simple_type val_env ~allow_open_arrow:false ~closed:false sty in
            let ty = cty.ctyp_type in
            add_method loc val_env label.txt priv Virtual ty sign;
            let field =
@@ -795,7 +795,7 @@ let rec class_field_first_pass self_loc cl_num final sign self_scope acc cf =
              | Some sty ->
                  let sty = Ast_helper.Typ.force_poly sty in
                  let cty' =
-                   Typetexp.transl_simple_type val_env ~closed:false sty
+                   Typetexp.transl_simple_type val_env ~allow_open_arrow:false ~closed:false sty
                  in
                  cty'.ctyp_type
            in
@@ -1786,6 +1786,8 @@ let collapse_conj_class_params env (cl, id, clty, _, _, _, _, _, _, _, _, _) =
 let final_decl env define_class
     (cl, id, clty, ty_id, cltydef, obj_id, obj_abbr, ci_params,
      arity, pub_meths, coe, expr) =
+  let sign = Btype.signature_of_class_type clty.cty_type in
+  Ctype.close_unconstrained_effect_rows env clty.cty_params sign;
   Ctype.nongen_vars_in_class_declaration clty
   |> Option.iter (fun vars ->
       let nongen_vars = Btype.TypeSet.elements vars in
@@ -1793,8 +1795,7 @@ let final_decl env define_class
         (Non_generalizable_class { id; clty; nongen_vars });
     );
   begin match
-    Ctype.closed_class clty.cty_params
-      (Btype.signature_of_class_type clty.cty_type)
+    Ctype.closed_class clty.cty_params sign
   with
     None        -> ()
   | Some reason ->
@@ -1999,6 +2000,7 @@ let type_object env loc s =
     class_structure (Int.to_string !class_num)
       Concrete Btype.lowest_level Definitely_final env env loc s
   in
+  Ctype.close_unconstrained_effect_rows env [] desc.cstr_type;
   Ctype.hide_private_methods desc.cstr_type;
   let meths = Btype.public_methods desc.cstr_type in
   (desc, meths)

@@ -43,7 +43,7 @@ let is_arrow_type t =
   | Ttuple _
   | Tconstr _
   | Tvar _ | Tunivar _ | Tobject _ | Tpoly _
-  | Tfield _ | Tnil | Tvariant _ | Tpackage _ -> false
+  | Tfield _ | Tnil | Tvariant _ | Teffect_row _ | Tpackage _ -> false
   | Tlink _ | Texpand _ | Tsubst _ -> assert false
 
 let rec need_parent t =
@@ -51,8 +51,8 @@ let rec need_parent t =
     Types.Tarrow _ | Types.Ttuple _ | Types.Tfunctor _ -> true
   | Types.Tlink t2 -> need_parent t2
   | Types.Tconstr _
-  | Types.Tvar _ | Types.Tunivar _ | Types.Tobject _ | Types.Tpoly _
-  | Types.Tfield _ | Types.Tnil | Types.Tvariant _ | Types.Tpackage _ -> false
+  | Types.Tvar _ | Tunivar _ | Types.Tobject _ | Types.Tpoly _
+  | Types.Tfield _ | Types.Tnil | Types.Tvariant _ | Types.Teffect_row _ | Types.Tpackage _ -> false
   | Types.Tsubst _ | Types.Texpand _ -> assert false
 
 let print_type_scheme ppf t =

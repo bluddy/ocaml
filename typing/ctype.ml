@@ -4682,6 +4682,93 @@ let close_class_signature env sign =
   let row = expand_head env sign.csig_self_row in
   close env row
 
+let close_unconstrained_effect_rows env params sign =
+  let row_vars = ref TypeSet.empty in
+  let visited = ref TypeSet.empty in
+  let rec iter_type ty =
+    let ty = Transient_expr.type_expr (Transient_expr.repr ty) in
+    if not (TypeSet.mem ty !visited) then begin
+      visited := TypeSet.add ty !visited;
+      match get_desc ty with
+      | Tarrow (_, t1, t2, _, eff) ->
+          let r = Types.effect_row_repr eff in
+          if not r.er_closed then begin
+            let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
+            match get_desc more with
+            | Tvar _ -> row_vars := TypeSet.add more !row_vars
+            | _ -> ()
+          end;
+          iter_type t1;
+          iter_type t2
+      | Ttuple l ->
+          List.iter (fun (_, t) -> iter_type t) l
+      | Tconstr (_, args, _) ->
+          List.iter iter_type args
+      | Tpoly (t, _) ->
+          iter_type t
+      | Tpackage { pack_constraints; _ } ->
+          List.iter (fun (_, t) -> iter_type t) pack_constraints
+      | Tobject (t, _) ->
+          iter_type t
+      | Tfield (_, _, t1, t2) ->
+          iter_type t1;
+          iter_type t2
+      | Tvariant row ->
+          Btype.iter_row iter_type row
+      | _ -> ()
+    end
+  in
+  List.iter iter_type params;
+  let param_vars = !row_vars in
+  let visited_close = ref TypeSet.empty in
+  let rec close_ty bound_univars ty =
+    let ty = Transient_expr.type_expr (Transient_expr.repr ty) in
+    if not (TypeSet.mem ty !visited_close) then begin
+      visited_close := TypeSet.add ty !visited_close;
+      match get_desc ty with
+      | Tpoly (t, tl) ->
+          let bound' =
+            List.fold_left
+              (fun s v ->
+                TypeSet.add (Transient_expr.type_expr (Transient_expr.repr v)) s)
+              bound_univars tl
+          in
+          close_ty bound' t
+      | Tarrow (_, t1, t2, _, eff) ->
+          let r = Types.effect_row_repr eff in
+          if not r.er_closed then begin
+            let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
+            match get_desc more with
+            | Tvar _ ->
+                if not (TypeSet.mem more param_vars)
+                   && not (TypeSet.mem more bound_univars) then begin
+                  let closed_row = Btype.new_effect_row ~closed:true r.er_fields in
+                  try unify_effect_rows env eff closed_row with _ -> ()
+                end
+            | _ -> ()
+          end;
+          close_ty bound_univars t1;
+          close_ty bound_univars t2
+      | Ttuple l ->
+          List.iter (fun (_, t) -> close_ty bound_univars t) l
+      | Tconstr (_, args, _) ->
+          List.iter (close_ty bound_univars) args
+      | Tpackage { pack_constraints; _ } ->
+          List.iter (fun (_, t) -> close_ty bound_univars t) pack_constraints
+      | Tobject (t, _) ->
+          close_ty bound_univars t
+      | Tfield (_, _, t1, t2) ->
+          close_ty bound_univars t1;
+          close_ty bound_univars t2
+      | Tvariant row ->
+          Btype.iter_row (close_ty bound_univars) row
+      | _ -> ()
+    end
+  in
+  Meths.iter (fun _ (_, _, ty) -> close_ty TypeSet.empty ty) sign.csig_meths;
+  close_ty TypeSet.empty sign.csig_self
+
+
 (*
    Build a copy of a type in which nodes reachable through a path composed
    only of Tarrow, Tpoly, Ttuple, Tpackage and Tconstr, and whose level
@@ -6395,6 +6482,58 @@ let subtype env ty1 ty2 =
              ~trace:trace0
              ~unification_trace:(List.tl trace))
         (List.rev constraints))
+
+let effect_subsume env ty expected_ty =
+  let visited = TypePairs.create 17 in
+  let rec sub env t1 t2 =
+    let t1 = expand_head env t1 in
+    let t2 = expand_head env t2 in
+    if eq_type t1 t2 then ()
+    else if TypePairs.mem visited (t1, t2) then ()
+    else begin
+      TypePairs.add visited (t1, t2);
+      match get_desc t1, get_desc t2 with
+      | Tvar _, _ | _, Tvar _ ->
+          unify env t1 t2
+      | Tarrow (l1, a1, r1, _, eff1), Tarrow (l2, a2, r2, _, eff2)
+        when compatible_labels ~in_pattern_mode:false l1 l2 ->
+          sub env a2 a1;
+          sub env r1 r2;
+          sub_effect_row env eff1 eff2
+      | Ttuple l1, Ttuple l2 when List.length l1 = List.length l2 ->
+          List.iter2 (fun (_, t1) (_, t2) -> sub env t1 t2) l1 l2
+      | _ ->
+          unify env t1 t2
+    end
+  and sub_effect_row env eff1 eff2 =
+    let r1 = effect_row_repr eff1 in
+    let r2 = effect_row_repr eff2 in
+    if r1.er_closed && r1.er_fields = [] then
+      ()
+    else begin
+      List.iter (fun (lbl1, f1) ->
+        if effect_flag_repr f1 = EF_present then begin
+          match List.assoc_opt lbl1 r2.er_fields with
+          | Some f2 ->
+              if effect_flag_repr f2 = EF_absent then
+                raise_unexplained_for Unify
+          | None ->
+              if r2.er_closed then
+                raise_unexplained_for Unify
+              else
+                let needed = Btype.new_effect_row ~closed:false [(lbl1, f1)] in
+                try unify_effect_rows env eff2 needed with _ -> raise_unexplained_for Unify
+        end
+      ) r1.er_fields;
+      if not r1.er_closed then begin
+        if r2.er_closed then
+          raise_unexplained_for Unify
+        else
+          try unify_effect_rows env eff1 eff2 with _ -> raise_unexplained_for Unify
+      end
+    end
+  in
+  sub env ty expected_ty
 
                               (*******************)
                               (*  Miscellaneous  *)
