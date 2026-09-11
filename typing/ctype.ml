@@ -877,9 +877,12 @@ let forward_try_expand_safe = (* Forward declaration *)
    [generic_level]).
 *)
 
-let modtype_of_package = ref (fun _ _ _ -> assert false)
+let modtype_of_package :
+    (Env.t -[]-> Location.t -[]-> Types.package -[]-> Types.module_type) ref =
+  ref (fun _ _ _ -> assert false)
 
-let set_modtype_of_package f =
+let set_modtype_of_package
+    (f : Env.t -[]-> Location.t -[]-> Types.package -[]-> Types.module_type) =
   modtype_of_package := f
 
 let modtype_of_package env loc pack =
@@ -3259,7 +3262,10 @@ let add_gadt_equation uenv source destination =
   end
 
 let nondep_type' = ref (fun _ _ _ -> assert false)
-let package_subtype = ref (fun _ _ _ -> assert false)
+let package_subtype :
+    (Env.t -[]-> Types.package -[]-> Types.package -[]->
+     (unit, Errortrace.first_class_module) Result.t) ref =
+  ref (fun _ _ _ -> assert false)
 
 exception Nondep_cannot_erase of Ident.t
 

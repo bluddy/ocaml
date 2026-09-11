@@ -197,13 +197,14 @@ let auto_include_libs libs alert find_in_dir fn =
   | Some base -> base
   | None -> raise Not_found
 
-let auto_include_otherlibs =
+let otherlibs =
   (* Ensure directories are only ever scanned once *)
   let expand = Misc.expand_directory Config.standard_library in
-  let otherlibs =
-    let read_lib lib = lazy (Dir.create ~hidden:false (expand ("+" ^ lib))) in
-    List.map (fun lib -> (lib, read_lib lib)) ["dynlink"; "str"; "unix"] in
-  auto_include_libs otherlibs
+  let read_lib lib = lazy (Dir.create ~hidden:false (expand ("+" ^ lib))) in
+  List.map (fun lib -> (lib, read_lib lib)) ["dynlink"; "str"; "unix"]
+
+let auto_include_otherlibs alert find_in_dir fn =
+  auto_include_libs otherlibs alert find_in_dir fn
 
 type visibility = Visible | Hidden
 

@@ -66,6 +66,6 @@ changes its behavior to accept backslash-newline as a token-separating blank.
 *)
 
 val set_preprocessor :
-  (unit -> unit) ->
-  ((Lexing.lexbuf -> Parser.token) -> Lexing.lexbuf -> Parser.token) ->
+  (unit -[]-> unit) ->
+  ((Lexing.lexbuf -[]-> Parser.token) -> Lexing.lexbuf -[]-> Parser.token) ->
   unit

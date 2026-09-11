@@ -229,9 +229,14 @@ let string_of_rounding = function
   | RoundTruncate -> "roundsd.trunc"
   | RoundNearest -> "roundsd.near"
 
-let internal_assembler = ref None
-let register_internal_assembler f = internal_assembler := Some f
-let with_internal_assembler assemble k =
+let internal_assembler :
+    (X86_ast.asm_program -[]-> string -[]-> unit) option ref =
+  ref None
+let register_internal_assembler
+    (f : X86_ast.asm_program -[]-> string -[]-> unit) =
+  internal_assembler := Some f
+let with_internal_assembler
+    (assemble : X86_ast.asm_program -[]-> string -[]-> unit) k =
   Misc.protect_refs [ R (internal_assembler, Some assemble) ] k
 
 (* Which asm conventions to use *)
@@ -249,7 +254,7 @@ let use_plt =
    If [binary_content] contains some data, we can directly
    save it. Otherwise, we have to ask an external command.
 *)
-let binary_content = ref None
+let binary_content : (string -[]-> unit) option ref = ref None
 
 let compile infile outfile =
   if masm then

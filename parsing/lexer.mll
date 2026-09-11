@@ -358,7 +358,11 @@ let set_loc lexbuf ~file ~line =
     pos_bol = pos.pos_cnum;
   }
 
-let preprocessor = ref None
+type preprocessor_t =
+  (unit -[]-> unit) *
+  ((Lexing.lexbuf -[]-> Parser.token) -> Lexing.lexbuf -[]-> Parser.token)
+
+let preprocessor : preprocessor_t option ref = ref None
 
 let escaped_newlines = ref false
 

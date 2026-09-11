@@ -1546,7 +1546,7 @@ module Make (T : TABLE) = struct
      its failure continuation, without letting Menhir do its own traditional
      error-handling (which involves popping the stack, etc.). *)
 
-  let rec loop_handle succeed fail read checkpoint =
+  let rec loop_handle succeed fail (read : supplier) checkpoint =
     match checkpoint with
     | InputNeeded _ ->
         let triple = read() in
@@ -1579,7 +1579,7 @@ module Make (T : TABLE) = struct
      reductions that were performed after seeing the problematic token. (These
      reductions must be default reductions or spurious reductions.) *)
 
-  let rec loop_handle_undo succeed fail read (inputneeded, checkpoint) =
+  let rec loop_handle_undo succeed fail (read : supplier) (inputneeded, checkpoint) =
     match checkpoint with
     | InputNeeded _ ->
         (* Update the last recorded [InputNeeded] checkpoint. *)
@@ -1609,7 +1609,7 @@ module Make (T : TABLE) = struct
      So, the [start] checkpoint must match [InputNeeded _]. Hence, it is
      permitted to call [loop_handle_undo] with a [start] checkpoint. *)
 
-  let loop_handle_undo succeed fail read checkpoint =
+  let loop_handle_undo succeed fail (read : supplier) checkpoint =
     assert (match checkpoint with InputNeeded _ -> true | _ -> false);
     loop_handle_undo succeed fail read (checkpoint, checkpoint)
 

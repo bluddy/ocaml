@@ -131,7 +131,7 @@ module Doc: sig
 
   val list: ?sep:printer0 -> 'a printer -> 'a list printer
   val iter:
-    ?sep:printer0 -> iter:(('a -> unit) -> 'b -> unit) -> 'a printer
+    ?sep:printer0 -> iter:(('a -> unit) -> 'b -[]-> unit) -> 'a printer
     ->'b printer
   val array: ?sep:printer0 -> 'a printer -> 'a array printer
   val seq: ?sep:printer0 -> 'a printer -> 'a Seq.t printer
@@ -169,8 +169,8 @@ val formatter: doc ref -> formatter
 (** Translate a {!Format_doc} printer to a {!Format} one. *)
 type 'a format_printer = Format.formatter -> 'a -> unit
 val compat: 'a printer -> 'a format_printer
-val compat1: ('p1 -> 'a printer) -> ('p1 -> 'a format_printer)
-val compat2: ('p1 -> 'p2 -> 'a printer) -> ('p1 -> 'p2 -> 'a format_printer)
+val compat1: ('p1 -[]-> 'a printer) -> ('p1 -> 'a format_printer)
+val compat2: ('p1 -[]-> 'p2 -[]-> 'a printer) -> ('p1 -> 'p2 -> 'a format_printer)
 
 (** If necessary, embed a {!Format} printer inside a formatting instruction
     stream. This breaks every guarantees provided by {!Format_doc}. *)
