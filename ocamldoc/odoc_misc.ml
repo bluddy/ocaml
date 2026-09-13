@@ -73,7 +73,7 @@ let list_concat sep =
   iter
 
 (* let remove_duplicates (type a) compare (li : a list) = *)
-let remove_duplicates : type a. (a -> a -> int) -> a list -> a list =
+let remove_duplicates : type a. (a -[ ]-> a -[ ]-> int) -> a list -> a list =
   fun compare li ->
   let module S = Set.Make(struct type t = a let compare = compare end) in
   let maybe_cons ((set, rev_acc) as acc) x =

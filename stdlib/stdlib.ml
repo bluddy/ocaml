@@ -45,8 +45,8 @@ exception Undefined_recursive_module = Undefined_recursive_module
 
 (* Composition operators *)
 
-external ( |> ) : 'a -> ('a -> 'b) -> 'b = "%revapply"
-external ( @@ ) : ('a -> 'b) -> 'a -> 'b = "%apply"
+external ( |> ) : 'a -[]-> ('a -['e]-> 'b) -['e]-> 'b = "%revapply"
+external ( @@ ) : ('a -['e]-> 'b) -[]-> 'a -['e]-> 'b = "%apply"
 
 (* Debugging *)
 
@@ -69,7 +69,7 @@ external ( < ) : 'a -> 'a -> bool = "%lessthan"
 external ( > ) : 'a -> 'a -> bool = "%greaterthan"
 external ( <= ) : 'a -> 'a -> bool = "%lessequal"
 external ( >= ) : 'a -> 'a -> bool = "%greaterequal"
-external compare : 'a -> 'a -> int = "%compare"
+external compare : 'a -[ ]-> 'a -[ ]-> int = "%compare"
 
 let min x y = if x <= y then x else y
 let max x y = if x >= y then x else y

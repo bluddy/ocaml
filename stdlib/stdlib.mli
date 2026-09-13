@@ -155,7 +155,7 @@ external ( >= ) : 'a -> 'a -> bool = "%greaterequal"
    Left-associative operator, see {!Ocaml_operators} for more information.
 *)
 
-external compare : 'a -> 'a -> int = "%compare"
+external compare : 'a -[ ]-> 'a -[ ]-> int = "%compare"
 (** Alias of {!Repr.compare}. *)
 
 val min : 'a -> 'a -> 'a
@@ -272,14 +272,14 @@ external __POS_OF__ : 'a -> (string * int * int * int) * 'a = "%loc_POS"
 
 (** {1 Composition operators} *)
 
-external ( |> ) : 'a -> ('a -> 'b) -> 'b = "%revapply"
+external ( |> ) : 'a -[]-> ('a -['e]-> 'b) -['e]-> 'b = "%revapply"
 (** Reverse-application operator: [x |> f |> g] is exactly equivalent
  to [g (f (x))].
  Left-associative operator, see {!Ocaml_operators} for more information.
  @since 4.01
 *)
 
-external ( @@ ) : ('a -> 'b) -> 'a -> 'b = "%apply"
+external ( @@ ) : ('a -['e]-> 'b) -[]-> 'a -['e]-> 'b = "%apply"
 (** Application operator: [g @@ f @@ x] is exactly equivalent to
  [g (f (x))].
  Right-associative operator, see {!Ocaml_operators} for more information.

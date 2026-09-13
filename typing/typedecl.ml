@@ -300,8 +300,26 @@ let transl_constructor_arguments ?(allow_open_arrow=false) env univars closed = 
       Types.Cstr_record lbls',
       Cstr_record lbls
 
+let rec is_effect_type env path =
+  Path.same path Predef.path_eff || Path.last path = "eff"
+  || Path.same path Predef.path_continuation || Path.last path = "continuation"
+  || (Path.last path = "t" &&
+      match path with
+      | Path.Pdot (p, "t") when Path.last p = "Effect" -> true
+      | _ -> false)
+  || try
+       let decl = Env.find_type path env in
+       match decl.type_manifest with
+       | Some ty ->
+           begin match get_desc (Ctype.expand_head env ty) with
+           | Tconstr (p, _, _) -> is_effect_type env p
+           | _ -> false
+           end
+       | None -> false
+     with Not_found -> false
+
 let make_constructor env loc type_path type_params svars sargs sret_type =
-  let is_eff = Path.same type_path Predef.path_eff || Path.last type_path = "eff" in
+  let is_eff = is_effect_type env type_path in
   match sret_type with
   | None ->
       let args, targs =
@@ -511,7 +529,7 @@ let transl_declaration env sdecl (id, uid) =
         None -> None, None
       | Some sty ->
         let no_row = not (is_fixed_type sdecl) in
-        let cty = transl_simple_type env ~closed:no_row sty in
+        let cty = transl_simple_type ~allow_open_arrow:false env ~closed:no_row sty in
         Some cty, Some cty.ctyp_type
     in
     let arity = List.length params in
@@ -1969,7 +1987,7 @@ let transl_with_constraint id ?fixed_row_path ~sig_env ~sig_decl ~outer_env
   let (tman, man) =  match sdecl.ptype_manifest with
       None -> Misc.fatal_error "Typedecl.transl_with_constraint: no manifest"
     | Some sty ->
-        let cty = transl_simple_type env ~closed:no_row sty in
+        let cty = transl_simple_type ~allow_open_arrow:false env ~closed:no_row sty in
         cty, cty.ctyp_type
   in
   (* In the second part, we check the consistency between the two

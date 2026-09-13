@@ -21,10 +21,10 @@
 
 (** {1:combinators Combinators} *)
 
-val id : 'a -> 'a
+val id : 'a -[]-> 'a
 (** [id] is the identity function. For any argument [x], [id x] is [x]. *)
 
-val const : 'a -> (_ -> 'a)
+val const : 'a -[]-> (_ -[]-> 'a)
 (** [const c] is a function that always returns the value [c]. For any
     argument [x], [(const c) x] is [c]. *)
 
@@ -44,7 +44,7 @@ val negate : ('a -> bool) -> ('a -> bool)
 
 (** {1:exception Exception handling} *)
 
-val protect : finally:(unit -> unit) -> (unit -> 'a) -> 'a
+val protect : finally:(unit -['e]-> unit) -> (unit -['e]-> 'a) -['e]-> 'a
 (** [protect ~finally work] invokes [work ()] and then [finally ()]
     before [work ()] returns with its value or an exception. In the
     latter case the exception is re-raised after [finally ()]. If

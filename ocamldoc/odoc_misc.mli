@@ -100,7 +100,7 @@ val create_index_lists : 'a list -> ('a -> string) -> 'a list list
 
 (** [remove_duplicates compare li] removes the duplicates in the input list,
     keeping the leftmost occurrence of each repeated element. *)
-val remove_duplicates : ('a -> 'a -> int) -> 'a list -> 'a list
+val remove_duplicates : ('a -[ ]-> 'a -[ ]-> int) -> 'a list -> 'a list
 
 (** [remove_ending_newline s] returns [s] without the optional ending newline. *)
 val remove_ending_newline : string -> string

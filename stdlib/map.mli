@@ -51,7 +51,7 @@ module type OrderedType =
     type t
       (** The type of the map keys. *)
 
-    val compare : t -> t -> int
+    val compare : t -[ ]-> t -[ ]-> int
       (** A total ordering function over the keys.
           This is a two-argument function [f] such that
           [f e1 e2] is zero if the keys [e1] and [e2] are equal,

@@ -213,7 +213,7 @@ let run (main : unit -> unit) : unit =
       task ()
     end
   in
-  let rec spawn (f : unit -> unit) : unit =
+  let rec spawn : 'e. (unit -['e]-> unit) -> unit = fun f ->
     match f () with
     | () -> dequeue ()
     | exception e ->

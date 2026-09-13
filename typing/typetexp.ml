@@ -468,10 +468,10 @@ let type_open :
     ref =
   ref (fun ?used_slot:_ _ -> assert false)
 
-let rec transl_type env ~policy ?(aliased=false) ?(allow_open_arrow=true) ?(ambient_row=None) ?(in_callback=false) ~row_context styp =
+let rec transl_type env ~policy ?(aliased=false) ?(allow_open_arrow=true) ?(ambient_row=None) ~row_context styp =
   let delayed () =
     Builtin_attributes.warning_scope styp.ptyp_attributes
-      (fun () -> transl_type_aux env ~policy ~aliased ~allow_open_arrow ~ambient_row ~in_callback ~row_context styp)
+      (fun () -> transl_type_aux env ~policy ~aliased ~allow_open_arrow ~ambient_row ~row_context styp)
   in
   if !Clflags.typing_recovery then
     Typing_recovery_state.with_saved_types (fun () ->
@@ -489,7 +489,7 @@ let rec transl_type env ~policy ?(aliased=false) ?(allow_open_arrow=true) ?(ambi
           })
   else delayed ()
 
-and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?(ambient_row=None) ?(in_callback=false) styp =
+and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?(ambient_row=None) styp =
   let loc = styp.ptyp_loc in
   let ctyp ctyp_desc ctyp_type =
     { ctyp_desc; ctyp_type; ctyp_env = env;
@@ -522,8 +522,8 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
           else
             None
     in
-    let arg_cty = transl_type env ~policy ~allow_open_arrow ~ambient_row:amb ~in_callback:true ~row_context st1 in
-    let ret_cty = transl_type env ~policy ~allow_open_arrow ~ambient_row:amb ~in_callback ~row_context st2 in
+    let arg_cty = transl_type env ~policy ~allow_open_arrow ~ambient_row:amb ~row_context st1 in
+    let ret_cty = transl_type env ~policy ~allow_open_arrow ~ambient_row:amb ~row_context st2 in
     let arg_ty = arg_cty.ctyp_type in
     let arg_ty =
       if Btype.is_Tpoly arg_ty then arg_ty else newmono arg_ty
@@ -538,28 +538,12 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
             (newconstr Predef.path_option [Btype.tpoly_get_mono arg_ty])
         end
     in
-    let is_ret_arrow =
-      match get_desc (Ctype.expand_head env ret_cty.ctyp_type) with
-      | Tarrow _ -> true
-      | _ -> false
-    in
-    let rec is_continuation ty =
-      let ty = Ctype.expand_head env ty in
-      match get_desc ty with
-      | Tconstr (p, _, _) when Path.same p Predef.path_continuation || Path.last p = "continuation" -> true
-      | Texpand (_, {abbr_path; _}) when Path.same abbr_path Predef.path_continuation || Path.last abbr_path = "continuation" -> true
-      | Texpand (t, _) | Tlink t -> is_continuation t
-      | _ -> false
-    in
     let eff =
       match eff_opt with
       | None ->
           begin match amb with
-          | Some r ->
-              if in_callback || (not is_ret_arrow && not (is_continuation (Ctype.expand_head env ret_cty.ctyp_type))) then r
-              else Btype.empty_pure_row ()
-          | None ->
-              Btype.empty_pure_row ()
+          | Some r -> r
+          | None -> Btype.empty_pure_row ()
           end
       | Some row ->
           if row.erow_closed && row.erow_labels = [] then
@@ -601,9 +585,8 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
     assert (List.length stl >= 2);
     Option.iter (fun l -> Error.log_and_raise loc env (Repeated_tuple_label l))
       (Misc.repeated_label stl);
-    let in_cb = in_callback || ambient_row <> None in
     let ctys =
-      List.map (fun (l, t) -> l, transl_type env ~policy ~allow_open_arrow ~ambient_row ~in_callback:in_cb ~row_context t) stl
+      List.map (fun (l, t) -> l, transl_type env ~policy ~allow_open_arrow ~ambient_row ~row_context t) stl
     in
     let ty =
       newty (Ttuple (List.map (fun (l, ctyp) -> l, ctyp.ctyp_type) ctys))
@@ -620,8 +603,25 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
       if List.length stl <> decl.type_arity then
         Error.log_and_raise styp.ptyp_loc env
           (Type_arity_mismatch(lid.txt, decl.type_arity, List.length stl));
-      let is_eff = Path.same path Predef.path_eff || Path.last path = "eff"
-                   || Path.same path Predef.path_continuation || Path.last path = "continuation" in
+      let is_eff =
+        Path.same path Predef.path_eff || Path.last path = "eff"
+        || Path.same path Predef.path_continuation || Path.last path = "continuation"
+        || (Path.last path = "t" &&
+            match path with
+            | Path.Pdot (p, "t") when Path.last p = "Effect" -> true
+            | _ -> false)
+        || try
+             let decl = Env.find_type path env in
+             match decl.type_manifest with
+             | Some ty ->
+                 begin match get_desc (Ctype.expand_head env ty) with
+                 | Tconstr (p, _, _) ->
+                     Path.same p Predef.path_eff || Path.last p = "eff"
+                     || Path.same p Predef.path_continuation || Path.last p = "continuation"
+                 | _ -> false
+                 end
+             | None -> false
+           with Not_found -> false in
       let allow_open_arrow = allow_open_arrow && is_eff in
       let ambient_row = if is_eff then ambient_row else None in
       let args = List.map (transl_type env ~policy ~allow_open_arrow ~ambient_row ~row_context) stl in

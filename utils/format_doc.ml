@@ -125,7 +125,10 @@ module Doc = struct
   let open_tag stag doc = add doc (Open_tag stag)
   let close_tag doc = add doc Close_tag
 
-  let iter ?(sep=Fun.id) ~iter:(iterator : ('a -[]-> unit) -> 'b -[]-> unit) elt l (doc : t) : t =
+  type printer0 = t -> t
+  type 'a printer = 'a -> printer0
+
+  let iter ?(sep=Fun.id) ~iter:(iterator : ('a -[]-> unit) -[]-> 'b -[]-> unit) (elt : 'a printer) l (doc : t) : t =
     let first = ref true in
     let rdoc = ref doc in
     let print x =
@@ -178,8 +181,6 @@ module Doc = struct
     subtext (String.length s) 0 0 s doc
 
   type ('a,'b) fmt = ('a, t, t, 'b) format4
-  type printer0 = t -> t
-  type 'a printer = 'a -> printer0
 
   let output_formatting_lit fmting_lit doc =
     let open CamlinternalFormatBasics in

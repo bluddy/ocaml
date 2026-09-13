@@ -131,7 +131,7 @@ module Doc: sig
 
   val list: ?sep:printer0 -> 'a printer -> 'a list printer
   val iter:
-    ?sep:printer0 -> iter:(('a -> unit) -> 'b -[]-> unit) -> 'a printer
+    ?sep:printer0 -> iter:(('a -[]-> unit) -[]-> 'b -[]-> unit) -> 'a printer
     ->'b printer
   val array: ?sep:printer0 -> 'a printer -> 'a array printer
   val seq: ?sep:printer0 -> 'a printer -> 'a Seq.t printer

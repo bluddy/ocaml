@@ -13,8 +13,8 @@
 (*                                                                        *)
 (**************************************************************************)
 
-let id x = x
-let const c _ = c
+let id : 'a -[]-> 'a = fun x -> x
+let const : 'a -[]-> 'b -[]-> 'a = fun c _ -> c
 let compose f g x = f (g x)
 let flip f x y = f y x
 let negate p v = not (p v)
@@ -25,7 +25,7 @@ let () = Printexc.register_printer @@ function
 | Finally_raised exn -> Some ("Fun.Finally_raised: " ^ Printexc.to_string exn)
 | _ -> None
 
-let protect ~(finally : unit -> unit) work =
+let protect ~finally work =
   let finally_no_exn () =
     try finally () with e ->
       let bt = Printexc.get_raw_backtrace () in
