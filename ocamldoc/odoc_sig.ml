@@ -579,7 +579,8 @@ module Analyser =
         | Parsetree.Psig_open _
         | Parsetree.Psig_include _
         | Parsetree.Psig_class _
-        | Parsetree.Psig_class_type _ as tp -> take_item tp
+        | Parsetree.Psig_class_type _
+        | Parsetree.Psig_effect _ as tp -> take_item tp
         | Parsetree.Psig_typesubst _ -> acc
         | Parsetree.Psig_type (rf, types) ->
           (match List.filter (fun td -> not (is_erased td.Parsetree.ptype_name.txt erased)) types with
@@ -1597,7 +1598,8 @@ module Analyser =
             in
             (maybe_more, new_env, eles)
         | Parsetree.Psig_attribute _
-        | Parsetree.Psig_extension _ ->
+        | Parsetree.Psig_extension _
+        | Parsetree.Psig_effect _ ->
             (0, env, [])
 
     (** Return a module_type_kind from a Parsetree.module_type and a Types.module_type *)

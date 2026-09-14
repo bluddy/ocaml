@@ -290,7 +290,9 @@ let print_effect_arrow ppf = function
   | None ->
       pp_print_string ppf " ->"
   | Some { oer_labels = []; oer_tail = None; oer_closed = true } ->
-      pp_print_string ppf " -[]->"
+      pp_print_string ppf " -->"
+  | Some { oer_labels = []; oer_tail = Some tail; _ } ->
+      fprintf ppf " -[%s]->" tail
   | Some { oer_labels; oer_tail; oer_closed = _ } ->
       pp_print_string ppf " -[ ";
       let first = ref true in
@@ -304,7 +306,7 @@ let print_effect_arrow ppf = function
       begin match oer_tail with
       | Some tail ->
           if not !first then pp_print_string ppf " | " else first := false;
-          pp_print_string ppf ("'" ^ tail)
+          pp_print_string ppf tail
       | None -> ()
       end;
       pp_print_string ppf " ]->"
@@ -399,6 +401,29 @@ and print_simple_out_type ppf =
          else if tags = None then "> " else "? ")
         print_fields row_fields
         print_present tags
+  | Otyp_effect_row eff ->
+      if eff.oer_labels = [] && eff.oer_tail = None && eff.oer_closed then
+        pp_print_string ppf "-[ ]-"
+      else if eff.oer_labels = [] && eff.oer_tail <> None then
+        fprintf ppf "-[ %s ]-" (Option.get eff.oer_tail)
+      else begin
+        pp_print_string ppf "-[ ";
+        let first = ref true in
+        List.iter (fun (lbl, flag) ->
+          if not !first then pp_print_string ppf ", " else first := false;
+          match flag with
+          | OF_Absent -> pp_print_string ppf ("~" ^ lbl)
+          | OF_Present -> pp_print_string ppf lbl
+          | OF_Var v -> pp_print_string ppf (lbl ^ ":" ^ v)
+        ) eff.oer_labels;
+        begin match eff.oer_tail with
+        | Some tail ->
+            if not !first then pp_print_string ppf " | " else first := false;
+            pp_print_string ppf tail
+        | None -> ()
+        end;
+        pp_print_string ppf " ]-"
+      end
   | Otyp_alias _ | Otyp_poly _ | Otyp_arrow _
   | Otyp_functor _ | Otyp_tuple _ as ty ->
       pp_open_box ppf 1;
@@ -419,7 +444,11 @@ and print_package ppf pack =
   List.iter
     (fun (s, t) ->
       let sep = if !first then (first := false; "with") else "and" in
-      fprintf ppf " %s type %s = %a" sep s print_out_type t
+      match t with
+      | Otyp_effect_row _ ->
+          fprintf ppf " %s effect %s = %a" sep s print_out_type t
+      | _ ->
+          fprintf ppf " %s type %s = %a" sep s print_out_type t
     )
     pack.opack_constraints
 and print_record_decl ppf lbls =

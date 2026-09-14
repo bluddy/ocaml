@@ -52,7 +52,7 @@ module type OrderedType =
     type t
       (** The type of the set elements. *)
 
-    val compare : t -[ ]-> t -[ ]-> int
+    val compare : t --> t --> int
       (** A total ordering function over the set elements.
           This is a two-argument function [f] such that
           [f e1 e2] is zero if the elements [e1] and [e2] are equal,

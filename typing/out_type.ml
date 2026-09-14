@@ -1162,18 +1162,16 @@ let rec tree_of_typexp mode ty =
             Some { oer_labels = []; oer_tail = None; oer_closed = true }
           else
             let r = effect_row_repr eff in
-            if r.er_fields = [] && not r.er_closed then
-              match printer_get_desc r.er_more with
-              | Tvar (Some name) ->
-                  Some { oer_labels = []; oer_tail = Some name; oer_closed = false }
-              | _ -> None
+            let tail =
+              if r.er_closed then None
+              else match printer_get_desc r.er_more with
+                | Tvar (Some name) | Tunivar (Some name) -> Some ("'" ^ name)
+                | Tconstr (p, _, _) -> Some (Path.name p)
+                | _ -> None
+            in
+            if r.er_fields = [] && not r.er_closed && tail = None then
+              None
             else
-              let tail =
-                if r.er_closed then None
-                else match printer_get_desc r.er_more with
-                  | Tvar (Some name) -> Some name
-                  | _ -> None
-              in
               let labels =
                 List.map (fun (lbl, flag) ->
                   let f = match effect_flag_repr flag with
@@ -1186,8 +1184,25 @@ let rec tree_of_typexp mode ty =
               Some { oer_labels = labels; oer_tail = tail; oer_closed = r.er_closed }
         in
         Otyp_arrow (lab, t1, tree_of_typexp mode ty2, eff_out)
-    | Teffect_row _ ->
-        Otyp_stuff "<eff>"
+    | Teffect_row eff ->
+        let r = effect_row_repr eff in
+        let tail =
+          if r.er_closed then None
+          else match printer_get_desc r.er_more with
+            | Tvar (Some name) | Tunivar (Some name) -> Some ("'" ^ name)
+            | Tconstr (p, _, _) -> Some (Path.name p)
+            | _ -> None
+        in
+        let labels =
+          List.map (fun (lbl, flag) ->
+            let f = match effect_flag_repr flag with
+              | EF_present -> OF_Present
+              | EF_absent -> OF_Absent
+              | EF_var -> OF_Present
+            in
+            (lbl, f)) r.er_fields
+        in
+        Otyp_effect_row { oer_labels = labels; oer_tail = tail; oer_closed = r.er_closed }
     | Tfunctor (l, id, pack, ty) ->
         let lab =
           if !print_labels || is_optional l then l else Nolabel

@@ -69,6 +69,7 @@ type out_type =
   | Otyp_open
   | Otyp_alias of {non_gen:bool; aliased:out_type; alias:string}
   | Otyp_arrow of Asttypes.arg_label * out_type * out_type * out_effect_row option
+  | Otyp_effect_row of out_effect_row
   | Otyp_class of out_ident * out_type list
   | Otyp_constr of out_ident * out_type list
   | Otyp_manifest of out_type * out_type

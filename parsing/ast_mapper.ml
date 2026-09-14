@@ -177,6 +177,8 @@ module T = struct
     | Ptyp_var s -> var ~loc ~attrs s
     | Ptyp_arrow (lab, t1, t2, eff) ->
         arrow ~loc ~attrs ?effects:eff lab (sub.typ sub t1) (sub.typ sub t2)
+    | Ptyp_effect_row eff ->
+        effect_row ~loc ~attrs eff
     | Ptyp_tuple tyl ->
         tuple ~loc ~attrs (List.map (fun (l, t) -> l, sub.typ sub t) tyl)
     | Ptyp_constr (lid, tl) ->
@@ -361,6 +363,10 @@ module MT = struct
         Pwith_modsubst (map_loc_lid sub s, map_loc_lid sub lid)
     | Pwith_modtypesubst (lid, mty) ->
         Pwith_modtypesubst (map_loc_lid sub lid, sub.module_type sub mty)
+    | Pwith_effect (lid, eff) ->
+        Pwith_effect (map_loc_lid sub lid, eff)
+    | Pwith_effectsubst (lid, eff) ->
+        Pwith_effectsubst (map_loc_lid sub lid, eff)
 
   let map_signature_item sub {psig_desc = desc; psig_loc = loc} =
     let open Sig in
@@ -386,6 +392,10 @@ module MT = struct
     | Psig_class l -> class_ ~loc (List.map (sub.class_description sub) l)
     | Psig_class_type l ->
         class_type ~loc (List.map (sub.class_type_declaration sub) l)
+    | Psig_effect ed ->
+        effect_ ~loc { ed with ped_name = map_loc map_string sub ed.ped_name;
+                              ped_attributes = sub.attributes sub ed.ped_attributes;
+                              ped_loc = sub.location sub ed.ped_loc }
     | Psig_extension (x, attrs) ->
         let attrs = sub.attributes sub attrs in
         extension ~loc ~attrs (sub.extension sub x)
@@ -437,6 +447,10 @@ module M = struct
     | Pstr_class l -> class_ ~loc (List.map (sub.class_declaration sub) l)
     | Pstr_class_type l ->
         class_type ~loc (List.map (sub.class_type_declaration sub) l)
+    | Pstr_effect ed ->
+        effect_ ~loc { ed with ped_name = map_loc map_string sub ed.ped_name;
+                              ped_attributes = sub.attributes sub ed.ped_attributes;
+                              ped_loc = sub.location sub ed.ped_loc }
     | Pstr_include x -> include_ ~loc (sub.include_declaration sub x)
     | Pstr_extension (x, attrs) ->
         let attrs = sub.attributes sub attrs in

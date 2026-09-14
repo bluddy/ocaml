@@ -996,6 +996,15 @@ module Merge = struct
     Typetexp.forward_decl.check_package_with_type_constraints <-
       check_package_with_type_constraints
 
+  let type_decl_of_effect_decl (ed : Parsetree.effect_declaration) : Parsetree.type_declaration =
+    let manifest =
+      match ed.ped_manifest with
+      | None -> None
+      | Some row ->
+          Some (Ast_helper.Typ.effect_row ~loc:ed.ped_loc row)
+    in
+    Ast_helper.Type.mk ~loc:ed.ped_loc ~attrs:ed.ped_attributes ?manifest ed.ped_name
+
   (* Helper for handling constraints on signatures: destructive constraints,
      written with ":=", actually remove the field from the signature, whereas
      non-destructive constraints just update the field. *)
@@ -1003,10 +1012,12 @@ module Merge = struct
     match constr with
     | Pwith_typesubst _
       | Pwith_modtypesubst _
-      | Pwith_modsubst _ -> true
+      | Pwith_modsubst _
+      | Pwith_effectsubst _ -> true
     | Pwith_module _
       | Pwith_type _
-      | Pwith_modtype _ -> false
+      | Pwith_modtype _
+      | Pwith_effect _ -> false
 
 end
 
@@ -1131,6 +1142,9 @@ and approx_sig env ssg =
           map_rec_type ~rec_flag
             (fun rs (id, info) -> Sig_type(id, info, rs, Exported)) decls rem
       | Psig_typesubst _ -> approx_sig env srem
+      | Psig_effect ed ->
+          let item' = { item with psig_desc = Psig_type (Nonrecursive, [Merge.type_decl_of_effect_decl ed]) } in
+          approx_sig env (item' :: srem)
       | Psig_module { pmd_name = { txt = None; _ }; _ } ->
           approx_sig env srem
       | Psig_module pmd ->
@@ -1240,6 +1254,17 @@ and approx_constraint env body constr =
   | Pwith_type (l, decl)
   | Pwith_typesubst (l, decl) ->
      Merge.merge_type_approx ~destructive env decl.ptype_loc body l
+
+  | Pwith_effect (l, row)
+  | Pwith_effectsubst (l, row) ->
+      let id_loc = { Location.txt = Longident.last l.txt; loc = l.loc } in
+      let decl = Merge.type_decl_of_effect_decl {
+        ped_name = id_loc;
+        ped_manifest = Some row;
+        ped_attributes = [];
+        ped_loc = l.loc;
+      } in
+      Merge.merge_type_approx ~destructive env decl.ptype_loc body l
 
   | Pwith_modtype (id, smty)
   | Pwith_modtypesubst (id, smty) ->
@@ -1641,6 +1666,25 @@ and transl_with ~loc env remove_aliases (rev_tconstraints, sg) constr =
         in
         (constr, merge_res)
 
+    | Pwith_effect (l, row)
+    | Pwith_effectsubst (l, row) ->
+        let id_loc = { Location.txt = Longident.last l.txt; loc = l.loc } in
+        let decl = Merge.type_decl_of_effect_decl {
+          ped_name = id_loc;
+          ped_manifest = Some row;
+          ped_attributes = [];
+          ped_loc = l.loc;
+        } in
+        let tdecl, merge_res =
+          Merge.merge_type ~destructive env loc sg l decl
+        in
+        let constr = if destructive then
+            (Twith_typesubst tdecl)
+          else
+            (Twith_type tdecl)
+        in
+        (constr, merge_res)
+
     | Pwith_module (l, l')
     | Pwith_modsubst (l,l') ->
         let path, md = Env.lookup_module ~loc l'.txt env in
@@ -1699,6 +1743,23 @@ and transl_signature env sg =
         [Sig_value(tdesc.prim_id, tdesc.prim_val, Exported)],
         newenv
     | Psig_type (rec_flag, sdecls) ->
+        let (decls, newenv, _) =
+          Typedecl.transl_type_decl env rec_flag sdecls
+        in
+        List.iter (fun td ->
+            Signature_names.check_type names td.typ_loc td.typ_id;
+          ) decls;
+        let sg =
+          map_rec_type_with_row_types ~rec_flag
+            (fun rs td -> Sig_type(td.typ_id, td.typ_type, rs, Exported))
+            decls []
+        in
+        mksig (Tsig_type (rec_flag, decls)) env loc,
+        sg,
+        newenv
+    | Psig_effect ed ->
+        let sdecls = [Merge.type_decl_of_effect_decl ed] in
+        let rec_flag = Asttypes.Nonrecursive in
         let (decls, newenv, _) =
           Typedecl.transl_type_decl env rec_flag sdecls
         in
@@ -2902,6 +2963,30 @@ and type_str_item ~names ~toplevel ~funct_body anchor env shape_map
         Shape.Map.add_value shape_map desc.prim_id desc.prim_val.val_uid,
         newenv
     | Pstr_type (rec_flag, sdecls) ->
+        let (decls, newenv, shapes) =
+          Typedecl.transl_type_decl env rec_flag sdecls
+        in
+        List.iter
+          Signature_names.(fun td -> check_type names td.typ_loc td.typ_id)
+          decls;
+        let items = map_rec_type_with_row_types ~rec_flag
+          (fun rs info -> Sig_type(info.typ_id, info.typ_type, rs, Exported))
+          decls []
+        in
+        let shape_map = List.fold_left2
+          (fun map { typ_id; _} shape ->
+            Shape.Map.add_type map typ_id shape)
+          shape_map
+          decls
+          shapes
+        in
+        Tstr_type (rec_flag, decls),
+        items,
+        shape_map,
+        enrich_type_decls anchor decls env newenv
+    | Pstr_effect ed ->
+        let sdecls = [Merge.type_decl_of_effect_decl ed] in
+        let rec_flag = Asttypes.Nonrecursive in
         let (decls, newenv, shapes) =
           Typedecl.transl_type_decl env rec_flag sdecls
         in

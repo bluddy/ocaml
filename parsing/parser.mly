@@ -88,6 +88,8 @@ let pstr_class (ext, l) =
   (Pstr_class l, ext)
 let pstr_class_type (ext, l) =
   (Pstr_class_type l, ext)
+let pstr_effect (ed, ext) =
+  (Pstr_effect ed, ext)
 
 let psig_extension body attrs =
   (Psig_extension (body, attrs), None)
@@ -124,6 +126,8 @@ let psig_class (ext, l) =
   (Psig_class l, ext)
 let psig_class_type (ext, l) =
   (Psig_class_type l, ext)
+let psig_effect (ed, ext) =
+  (Psig_effect ed, ext)
 
 let mkctf ~loc ?attrs ?docs d =
   Ctf.mk ~loc:(make_loc loc) ?attrs ?docs d
@@ -715,6 +719,12 @@ let package_type_of_module_type pmty =
           | None -> assert false
         in
         (lid, ty)
+    | Pwith_effect (lid, erow) ->
+        let ty = Ast_helper.Typ.effect_row ~loc:lid.loc erow in
+        (lid, ty)
+    | Pwith_effectsubst (lid, erow) ->
+        let ty = Ast_helper.Typ.effect_row ~loc:lid.loc erow in
+        (lid, ty)
     | _ ->
         err pmty.pmty_loc Not_with_type
   in
@@ -832,6 +842,7 @@ let mk_directive ~loc name arg =
 %token MINUS                  "-"
 %token MINUSDOT               "-."
 %token MINUSGREATER           "->"
+%token PURE_ARROW              "-->"
 %token MODULE                 "module"
 %token MUTABLE                "mutable"
 %token NEW                    "new"
@@ -928,7 +939,7 @@ The precedences must be listed from low to high.
 %left     BAR                           /* pattern (p|p|p) */
 %nonassoc below_COMMA
 %left     COMMA                         /* expr/labeled_tuple (e,e,e) */
-%right    MINUSGREATER                  /* function_type (t -> t -> t) */
+%right    MINUSGREATER PURE_ARROW       /* function_type (t -> t -> t) */
 %right    OR BARBAR                     /* expr (e || e || e) */
 %right    AMPERSAND AMPERAMPER          /* expr (e && e && e) */
 %nonassoc below_EQUAL
@@ -1589,6 +1600,8 @@ local_structure_item:
         { pstr_module $1 }
     | open_declaration
         { pstr_open $1 }
+    | effect_declaration
+        { pstr_effect $1 }
     )
     { $1 }
 ;
@@ -1695,6 +1708,22 @@ module_type_declaration:
     let loc = make_loc $sloc in
     let docs = symbol_docs $sloc in
     Mtd.mk id ?typ ~attrs ~loc ~docs, ext
+  }
+;
+
+(* An effect declaration. *)
+effect_declaration:
+  EFFECT
+  ext = ext
+  attrs1 = attributes
+  id = mkrhs(ident)
+  manifest = preceded(EQUAL, standalone_effect_row)?
+  attrs2 = post_item_attributes
+  {
+    let attrs = attrs1 @ attrs2 in
+    let loc = make_loc $sloc in
+    let docs = symbol_docs $sloc in
+    Eff.mk id ?manifest ~attrs ~loc ~docs, ext
   }
 ;
 
@@ -1835,6 +1864,8 @@ signature_item:
         { psig_class $1 }
     | class_type_declarations
         { psig_class_type $1 }
+    | effect_declaration
+        { psig_effect $1 }
     )
     { $1 }
 
@@ -3652,6 +3683,10 @@ with_constraint:
       { Pwith_modtype (l, rhs) }
   | MODULE TYPE l=mkrhs(mty_longident) COLONEQUAL rhs=module_type
       { Pwith_modtypesubst (l, rhs) }
+  | EFFECT mkrhs(label_longident) EQUAL standalone_effect_row
+      { Pwith_effect ($2, $4) }
+  | EFFECT mkrhs(label_longident) COLONEQUAL standalone_effect_row
+      { Pwith_effectsubst ($2, $4) }
 ;
 with_type_binder:
     EQUAL          { Public }
@@ -3735,30 +3770,56 @@ alias_type:
 %inline effect_arrow:
   | MINUSGREATER
       { None }
+  | PURE_ARROW
+      { Some { erow_labels = []; erow_tail = None; erow_closed = true; erow_anon = false } }
   | MINUS LBRACKET RBRACKET MINUSGREATER
-      { Some { erow_labels = []; erow_tail = None; erow_closed = true } }
+      { Some { erow_labels = []; erow_tail = None; erow_closed = true; erow_anon = false } }
   | MINUS LBRACKET row = effect_row RBRACKET MINUSGREATER
+      { Some row }
+  | MINUS LBRACKETGREATER RBRACKET MINUSGREATER
+      { Some { erow_labels = []; erow_tail = None; erow_closed = false; erow_anon = true } }
+  | MINUS LBRACKETGREATER row = effect_row_anon RBRACKET MINUSGREATER
       { Some row }
 ;
 
+standalone_effect_row:
+  | MINUS LBRACKET RBRACKET MINUS
+      { { erow_labels = []; erow_tail = None; erow_closed = true; erow_anon = false } }
+  | MINUS LBRACKET row = effect_row RBRACKET MINUS
+      { row }
+  | MINUS LBRACKETGREATER RBRACKET MINUS
+      { { erow_labels = []; erow_tail = None; erow_closed = false; erow_anon = true } }
+  | MINUS LBRACKETGREATER row = effect_row_anon RBRACKET MINUS
+      { row }
+;
+
 effect_row:
-  | id = LIDENT
-      { if id = "pure" then
-          { erow_labels = []; erow_tail = None; erow_closed = true }
-        else
-          raise Syntaxerr.(Error(Other (make_loc $sloc)))
-      }
   | tail = effect_tail
-      { { erow_labels = []; erow_tail = Some tail; erow_closed = false } }
+      { if tail.txt = "pure" then
+          { erow_labels = []; erow_tail = None; erow_closed = true; erow_anon = false }
+        else
+          { erow_labels = []; erow_tail = Some tail; erow_closed = false; erow_anon = false }
+      }
   | fields = effect_field_list
-      { { erow_labels = fields; erow_tail = None; erow_closed = true } }
+      { { erow_labels = fields; erow_tail = None; erow_closed = true; erow_anon = false } }
   | fields = effect_field_list BAR tail = effect_tail
-      { { erow_labels = fields; erow_tail = Some tail; erow_closed = false } }
+      { { erow_labels = fields; erow_tail = Some tail; erow_closed = false; erow_anon = false } }
+;
+
+effect_row_anon:
+  | fields = effect_field_list
+      { { erow_labels = fields; erow_tail = None; erow_closed = false; erow_anon = true } }
 ;
 
 effect_tail:
   | QUOTE tyvar = mkloc(ident)
-      { tyvar }
+      { { tyvar with txt = "'" ^ tyvar.txt } }
+  | QUOTE tyvar = ident id = mkloc(label_longident)
+      { let name = "'" ^ tyvar ^ " " ^ String.concat "." (Longident.flatten id.txt) in
+        { id with txt = name } }
+  | id = mkloc(label_longident)
+      { let name = String.concat "." (Longident.flatten id.txt) in
+        { id with txt = name } }
 ;
 
 effect_field_list:
@@ -3988,6 +4049,8 @@ atomic_type:
         { Ptyp_var ident }
     | UNDERSCORE
         { Ptyp_any }
+    | row = standalone_effect_row
+        { Ptyp_effect_row row }
   )
   { $1 } /* end mktyp group */
 ;

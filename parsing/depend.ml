@@ -98,6 +98,7 @@ let rec add_type bv ty =
     Ptyp_any -> ()
   | Ptyp_var _ -> ()
   | Ptyp_arrow(_, t1, t2, _) -> add_type bv t1; add_type bv t2
+  | Ptyp_effect_row _ -> ()
   | Ptyp_tuple tl -> List.iter (fun (_, t) -> add_type bv t) tl
   | Ptyp_constr(c, tl) -> add bv c; List.iter (add_type bv) tl
   | Ptyp_object (fl, _) ->
@@ -348,6 +349,7 @@ and add_modtype bv mty =
           | Pwith_typesubst (_, td) -> add_type_declaration bv td
           | Pwith_modsubst (_, lid) -> add_module_path bv lid
           | Pwith_modtypesubst (_, mty) -> add_modtype bv mty
+          | Pwith_effect _ | Pwith_effectsubst _ -> ()
         )
         cstrl
   | Pmty_typeof m -> add_module_expr bv m
@@ -439,6 +441,7 @@ and add_sig_item (bv, m) item =
       List.iter (add_class_description bv) cdl; (bv, m)
   | Psig_class_type cdtl ->
       List.iter (add_class_type_declaration bv) cdtl; (bv, m)
+  | Psig_effect _ -> (bv, m)
   | Psig_attribute _ -> (bv, m)
   | Psig_extension (e, _) ->
       handle_extension e;
@@ -580,6 +583,7 @@ and add_struct_item (bv, m) item : _ String.Map.t * _ String.Map.t =
       List.iter (add_class_declaration bv) cdl; (bv, m)
   | Pstr_class_type cdtl ->
       List.iter (add_class_type_declaration bv) cdtl; (bv, m)
+  | Pstr_effect _ -> (bv, m)
   | Pstr_include incl ->
       let Node (s, m') as n = add_module_binding bv incl.pincl_mod in
       if !Clflags.no_alias_deps then

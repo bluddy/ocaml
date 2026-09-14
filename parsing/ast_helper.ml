@@ -68,6 +68,7 @@ module Typ = struct
   let any ?loc ?attrs () = mk ?loc ?attrs Ptyp_any
   let var ?loc ?attrs a = mk ?loc ?attrs (Ptyp_var a)
   let arrow ?loc ?attrs ?effects a b c = mk ?loc ?attrs (Ptyp_arrow (a, b, c, effects))
+  let effect_row ?loc ?attrs eff = mk ?loc ?attrs (Ptyp_effect_row eff)
   let tuple ?loc ?attrs a = mk ?loc ?attrs (Ptyp_tuple a)
   let constr ?loc ?attrs a b = mk ?loc ?attrs (Ptyp_constr (a, b))
   let object_ ?loc ?attrs a b = mk ?loc ?attrs (Ptyp_object (a, b))
@@ -128,6 +129,8 @@ module Typ = struct
             Ptyp_extension (s, arg)
         | Ptyp_functor (label, name, ptyp, codomain) ->
             Ptyp_functor (label, name, loop_package_type ptyp, loop codomain)
+        | Ptyp_effect_row eff ->
+            Ptyp_effect_row eff
       in
       {t with ptyp_desc = desc}
     and loop_row_field field =
@@ -297,6 +300,7 @@ module Sig = struct
   let include_ ?loc a = mk ?loc (Psig_include a)
   let class_ ?loc a = mk ?loc (Psig_class a)
   let class_type ?loc a = mk ?loc (Psig_class_type a)
+  let effect_ ?loc a = mk ?loc (Psig_effect a)
   let extension ?loc ?(attrs = []) a = mk ?loc (Psig_extension (a, attrs))
   let attribute ?loc a = mk ?loc (Psig_attribute a)
   let text txt =
@@ -322,6 +326,7 @@ module Str = struct
   let open_ ?loc a = mk ?loc (Pstr_open a)
   let class_ ?loc a = mk ?loc (Pstr_class a)
   let class_type ?loc a = mk ?loc (Pstr_class_type a)
+  let effect_ ?loc a = mk ?loc (Pstr_effect a)
   let include_ ?loc a = mk ?loc (Pstr_include a)
   let extension ?loc ?(attrs = []) a = mk ?loc (Pstr_extension (a, attrs))
   let attribute ?loc a = mk ?loc (Pstr_attribute a)
@@ -485,6 +490,18 @@ module Mtd = struct
      pmtd_attributes =
        add_text_attrs text (add_docs_attrs docs attrs);
      pmtd_loc = loc;
+    }
+end
+
+module Eff = struct
+  let mk ?(loc = !default_loc) ?(attrs = [])
+        ?(docs = empty_docs) ?(text = []) ?manifest name =
+    {
+     ped_name = name;
+     ped_manifest = manifest;
+     ped_attributes =
+       add_text_attrs text (add_docs_attrs docs attrs);
+     ped_loc = loc;
     }
 end
 

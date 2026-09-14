@@ -148,6 +148,7 @@ module T = struct
     | Ptyp_var _ -> ()
     | Ptyp_arrow (_lab, t1, t2, _eff) ->
         sub.typ sub t1; sub.typ sub t2
+    | Ptyp_effect_row _ -> ()
     | Ptyp_tuple tyl -> List.iter (fun (_, e) -> sub.typ sub e) tyl
     | Ptyp_constr (lid, tl) ->
         iter_loc_lid sub lid; List.iter (sub.typ sub) tl
@@ -316,6 +317,9 @@ module MT = struct
         iter_loc_lid sub s; iter_loc_lid sub lid
     | Pwith_modtypesubst (lid, mty) ->
         iter_loc_lid sub lid; sub.module_type sub mty
+    | Pwith_effect (lid, _)
+    | Pwith_effectsubst (lid, _) ->
+        iter_loc_lid sub lid
 
   let iter_signature_item sub {psig_desc = desc; psig_loc = loc} =
     sub.location sub loc;
@@ -337,6 +341,9 @@ module MT = struct
     | Psig_class l -> List.iter (sub.class_description sub) l
     | Psig_class_type l ->
         List.iter (sub.class_type_declaration sub) l
+    | Psig_effect ed ->
+        iter_loc iter_string sub ed.ped_name;
+        sub.attributes sub ed.ped_attributes
     | Psig_extension (x, attrs) ->
         sub.attributes sub attrs;
         sub.extension sub x
@@ -384,6 +391,9 @@ module M = struct
     | Pstr_class l -> List.iter (sub.class_declaration sub) l
     | Pstr_class_type l ->
         List.iter (sub.class_type_declaration sub) l
+    | Pstr_effect ed ->
+        iter_loc iter_string sub ed.ped_name;
+        sub.attributes sub ed.ped_attributes
     | Pstr_include x -> sub.include_declaration sub x
     | Pstr_extension (x, attrs) ->
         sub.attributes sub attrs; sub.extension sub x

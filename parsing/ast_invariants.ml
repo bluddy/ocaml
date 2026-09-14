@@ -159,7 +159,8 @@ let iterator =
     super.with_constraint self wc;
     match wc with
     | Pwith_type (id, _)
-    | Pwith_module (id, _) -> simple_longident id
+    | Pwith_module (id, _)
+    | Pwith_effect (id, _) -> simple_longident id
     | _ -> ()
   in
   let module_expr self me =

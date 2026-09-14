@@ -3134,8 +3134,13 @@ type ambient_scope = {
 let ambient_effect_stack = ref ([] : ambient_scope list)
 
 let push_ambient_scope ?(param_tys=[]) () =
+  let inherited =
+    match !ambient_effect_stack with
+    | [] -> []
+    | parent :: _ -> parent.amb_param_tys
+  in
   let row = Btype.fresh_ambient_row_var () in
-  let scope = { amb_row = row; amb_param_tys = param_tys } in
+  let scope = { amb_row = row; amb_param_tys = param_tys @ inherited } in
   ambient_effect_stack := scope :: !ambient_effect_stack;
   scope
 
@@ -3217,28 +3222,19 @@ let emit_ambient_effect env eff =
                     try Ctype.unify env amb_more more with Ctype.Unify _ -> ()
                 end
               end
+          | Tconstr _ ->
+              let amb_r = Types.effect_row_repr scope.amb_row in
+              if not amb_r.er_closed then begin
+                let amb_more = Transient_expr.type_expr (Transient_expr.repr amb_r.er_more) in
+                if not (Types.eq_type amb_more more) then
+                  try Ctype.unify env amb_more more with Ctype.Unify _ -> ()
+              end
           | _ -> ()
         end
   end
 
-let finalize_ambient_scope env ?(param_tys=[]) scope =
-  let r = Types.effect_row_repr scope.amb_row in
-  if r.er_closed then
-    scope.amb_row
-  else
-    let effective_param_tys = if param_tys <> [] then param_tys else scope.amb_param_tys in
-    let param_row_vars = collect_row_variables effective_param_tys in
-    let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
-    if TypeSet.mem more param_row_vars then
-      scope.amb_row
-    else begin
-      let closed_row = Btype.new_effect_row ~closed:true r.er_fields in
-      begin try
-        Ctype.unify_effect_rows env scope.amb_row closed_row
-      with Ctype.Unify _ -> ()
-      end;
-      scope.amb_row
-    end
+let finalize_ambient_scope _env ?param_tys:(_=[]) scope =
+  scope.amb_row
 
 let current_body_effect = ref (None : Types.effect_row option)
 let delayed_apply_effects = ref ([] : Types.effect_row list)
@@ -7804,26 +7800,26 @@ and type_effect_cases
   = fun ?k_eff ?k_res category env ty_res_explained loc caselist conts ->
       let { ty = ty_res; explanation = _ } = ty_res_explained in
       let ty_k_res = Option.value ~default:ty_res k_res in
-      (* remember original level *)
-      with_local_level begin fun () ->
-        (* Create a locally abstract type for effect type. *)
-        let new_env, ty_arg, ty_cont =
-          let decl = Ctype.new_local_type ~loc Definition in
-          let scope = create_scope () in
-          let name = Ctype.get_new_abstract_name env "%eff" in
-          let id = Ident.create_scoped ~scope name in
-          let new_env = Env.add_type ~check:false id decl env in
-          let ty_eff = newgenty (Tconstr (Path.Pident id,[],ref Mnil)) in
-          new_env,
-          Predef.type_eff ty_eff,
-          Predef.type_continuation ty_eff ty_k_res
-        in
-        let conts = List.map (type_continuation_pat ?k_eff env ty_cont) conts in
-        let cases, _ = type_cases category new_env ty_arg
-          ty_res_explained ~conts ~check_if_total:false loc caselist
-        in
-          cases
+      List.map2 (fun case cont ->
+        with_local_level begin fun () ->
+          let new_env, ty_arg, ty_cont =
+            let decl = Ctype.new_local_type ~loc:case.Parsetree.pc_lhs.ppat_loc Definition in
+            let scope = create_scope () in
+            let name = Ctype.get_new_abstract_name env "%eff" in
+            let id = Ident.create_scoped ~scope name in
+            let new_env = Env.add_type ~check:false id decl env in
+            let ty_eff = newgenty (Tconstr (Path.Pident id,[],ref Mnil)) in
+            new_env,
+            Predef.type_eff ty_eff,
+            Predef.type_continuation ty_eff ty_k_res
+          in
+          let cont_desc = type_continuation_pat ?k_eff env ty_cont cont in
+          let cases, _ = type_cases category new_env ty_arg
+            ty_res_explained ~conts:[cont_desc] ~check_if_total:false loc [case]
+          in
+          List.hd cases
         end
+      ) caselist conts
 
 and value_bindings_of_pat_exp_lists pat_list exp_list ~spat_sexp_list =
   let l = List.combine pat_list exp_list in

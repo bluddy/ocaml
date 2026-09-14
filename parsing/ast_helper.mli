@@ -73,6 +73,7 @@ module Typ :
     val var: ?loc:loc -> ?attrs:attrs -> string -> core_type
     val arrow: ?loc:loc -> ?attrs:attrs -> ?effects:effect_row -> arg_label
                -> core_type -> core_type -> core_type
+    val effect_row: ?loc:loc -> ?attrs:attrs -> effect_row -> core_type
     val tuple: ?loc:loc -> ?attrs:attrs -> (string option * core_type) list
                -> core_type
     val constr: ?loc:loc -> ?attrs:attrs -> lid -> core_type list -> core_type
@@ -316,6 +317,7 @@ module Sig:
     val include_: ?loc:loc -> include_description -> signature_item
     val class_: ?loc:loc -> class_description list -> signature_item
     val class_type: ?loc:loc -> class_type_declaration list -> signature_item
+    val effect_: ?loc:loc -> effect_declaration -> signature_item
     val extension: ?loc:loc -> ?attrs:attrs -> extension -> signature_item
     val attribute: ?loc:loc -> attribute -> signature_item
     val text: text -> signature_item list
@@ -339,6 +341,7 @@ module Str:
     val open_: ?loc:loc -> open_declaration -> structure_item
     val class_: ?loc:loc -> class_declaration list -> structure_item
     val class_type: ?loc:loc -> class_type_declaration list -> structure_item
+    val effect_: ?loc:loc -> effect_declaration -> structure_item
     val include_: ?loc:loc -> include_declaration -> structure_item
     val extension: ?loc:loc -> ?attrs:attrs -> extension -> structure_item
     val attribute: ?loc:loc -> attribute -> structure_item
@@ -364,6 +367,13 @@ module Mtd:
   sig
     val mk: ?loc:loc -> ?attrs:attrs -> ?docs:docs -> ?text:text ->
       ?typ:module_type -> str -> module_type_declaration
+  end
+
+(** Effect declarations *)
+module Eff:
+  sig
+    val mk: ?loc:loc -> ?attrs:attrs -> ?docs:docs -> ?text:text ->
+      ?manifest:effect_row -> str -> effect_declaration
   end
 
 (** Module bindings *)

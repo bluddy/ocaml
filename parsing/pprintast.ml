@@ -444,10 +444,12 @@ and core_type ctxt f x =
         let arrow_str =
           match eff with
           | None -> "->"
-          | Some { erow_labels = []; erow_tail = None; _ } -> "-[]->"
+          | Some { erow_labels = []; erow_tail = None; erow_closed = true; erow_anon = false } -> "-->"
+          | Some { erow_labels = []; erow_tail = None; erow_closed = false; erow_anon = true } -> "-[> ]->"
           | Some { erow_labels = []; erow_tail = Some tail; _ } ->
-              Printf.sprintf "-['%s]->" tail.txt
-          | Some { erow_labels; erow_tail; _ } ->
+              let t_str = if tail.txt <> "" && tail.txt.[0] = '\'' then tail.txt else "'" ^ tail.txt in
+              Printf.sprintf "-[%s]->" t_str
+          | Some { erow_labels; erow_tail; erow_anon; _ } ->
               let labels_str =
                 erow_labels
                 |> List.map (fun (lbl, flag) ->
@@ -457,9 +459,14 @@ and core_type ctxt f x =
                      | F_Var v -> "?" ^ v.txt ^ " " ^ lbl.txt)
                 |> String.concat ", "
               in
-              match erow_tail with
-              | None -> Printf.sprintf "-[ %s ]->" labels_str
-              | Some tail -> Printf.sprintf "-[ %s | '%s ]->" labels_str tail.txt
+              if erow_anon then
+                Printf.sprintf "-[> %s ]->" labels_str
+              else
+                match erow_tail with
+                | None -> Printf.sprintf "-[ %s ]->" labels_str
+                | Some tail ->
+                    let t_str = if tail.txt <> "" && tail.txt.[0] = '\'' then tail.txt else "'" ^ tail.txt in
+                    Printf.sprintf "-[ %s | %s ]->" labels_str t_str
         in
         pp f "@[<2>%a@;%s@;%a@]" (* FIXME remove parens later *)
           (type_with_label ctxt) (l,ct1) arrow_str (core_type ctxt) ct2
@@ -560,6 +567,36 @@ and core_type1 ctxt f x =
         pp f "@[<hov2>(module@ %a)@]" (package_type ctxt) pck_ty
     | Ptyp_open(li, ct) ->
        pp f "@[<hov2>%a.(%a)@]" longident_loc li (core_type ctxt) ct
+    | Ptyp_effect_row eff ->
+        let row_str =
+          if eff.erow_labels = [] && eff.erow_tail = None && eff.erow_closed && not eff.erow_anon then
+            "-[ ]-"
+          else if eff.erow_labels = [] && eff.erow_tail = None && eff.erow_anon then
+            "-[> ]-"
+          else if eff.erow_labels = [] && Option.is_some eff.erow_tail then
+            let tail = Option.get eff.erow_tail in
+            let t_str = if tail.txt <> "" && tail.txt.[0] = '\'' then tail.txt else "'" ^ tail.txt in
+            Printf.sprintf "-[ %s ]-" t_str
+          else
+            let labels_str =
+              eff.erow_labels
+              |> List.map (fun (lbl, flag) ->
+                   match flag with
+                   | F_Present -> lbl.txt
+                   | F_Absent -> "~" ^ lbl.txt
+                   | F_Var v -> "?" ^ v.txt ^ " " ^ lbl.txt)
+              |> String.concat ", "
+            in
+            if eff.erow_anon then
+              Printf.sprintf "-[> %s ]-" labels_str
+            else
+              match eff.erow_tail with
+              | None -> Printf.sprintf "-[ %s ]-" labels_str
+              | Some tail ->
+                  let t_str = if tail.txt <> "" && tail.txt.[0] = '\'' then tail.txt else "'" ^ tail.txt in
+                  Printf.sprintf "-[ %s | %s ]-" labels_str t_str
+        in
+        pp f "%s" row_str
     | Ptyp_extension e -> extension ctxt f e
     | (Ptyp_arrow _ | Ptyp_alias _ | Ptyp_poly _ | Ptyp_functor _) ->
        paren true (core_type ctxt) f x
@@ -1364,6 +1401,14 @@ and with_constraint ctxt f = function
       pp f "module type %a :=@ %a"
         (with_loc type_longident) li
         (module_type ctxt) mty;
+  | Pwith_effect (li, eff) ->
+      pp f "effect@ %a =@ %a"
+        (with_loc type_longident) li
+        (core_type ctxt) { ptyp_desc = Ptyp_effect_row eff; ptyp_loc = Location.none; ptyp_loc_stack = []; ptyp_attributes = [] }
+  | Pwith_effectsubst (li, eff) ->
+      pp f "effect@ %a :=@ %a"
+        (with_loc type_longident) li
+        (core_type ctxt) { ptyp_desc = Ptyp_effect_row eff; ptyp_loc = Location.none; ptyp_loc_stack = []; ptyp_attributes = [] };
 
 
 and module_type1 ctxt f x =
@@ -1406,6 +1451,13 @@ and signature_item ctxt f x : unit =
       type_extension ctxt f te
   | Psig_exception ed ->
       exception_declaration ctxt f ed
+  | Psig_effect ed ->
+      pp f "@[<2>effect@ %s" ed.ped_name.txt;
+      (match ed.ped_manifest with
+       | None -> ()
+       | Some eff ->
+           pp f "@ =@ %a" (core_type ctxt) { ptyp_desc = Ptyp_effect_row eff; ptyp_loc = Location.none; ptyp_loc_stack = []; ptyp_attributes = [] });
+      pp f "@]%a" (item_attributes ctxt) ed.ped_attributes
   | Psig_class l ->
       let class_description kwd f ({pci_params=ls;pci_name={txt;_};_} as x) =
         pp f "@[<2>%s %a%a%a@;:@;%a@]%a" kwd
@@ -1698,6 +1750,13 @@ and structure_item ctxt f x =
               (list ~sep:"@," (class_declaration "and")) xs
       end
   | Pstr_class_type l -> class_type_declaration_list ctxt f l
+  | Pstr_effect ed ->
+      pp f "@[<2>effect@ %s" ed.ped_name.txt;
+      (match ed.ped_manifest with
+       | None -> ()
+       | Some eff ->
+           pp f "@ =@ %a" (core_type ctxt) { ptyp_desc = Ptyp_effect_row eff; ptyp_loc = Location.none; ptyp_loc_stack = []; ptyp_attributes = [] });
+      pp f "@]%a" (item_attributes ctxt) ed.ped_attributes
   | Pstr_primitive pd ->
       pp f "@[<hov2>external@ %a@ %a@]%a"
         ident_of_name pd.pprim_name.txt

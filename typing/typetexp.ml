@@ -468,6 +468,75 @@ let type_open :
     ref =
   ref (fun ?used_slot:_ _ -> assert false)
 
+let transl_effect_row env ~policy ~row_context (row : Parsetree.effect_row) =
+  if row.erow_closed && row.erow_labels = [] && not row.erow_anon then
+    Btype.empty_pure_row ()
+  else
+    let fields =
+      List.map (fun (lbl_loc, flag) ->
+        let f = match flag with
+          | Parsetree.F_Present -> Types.eff_present
+          | Parsetree.F_Absent -> Types.eff_absent
+          | Parsetree.F_Var _ -> Types.eff_var ()
+        in
+        lbl_loc.Location.txt, f
+      ) row.erow_labels
+    in
+    let (extra_fields, more) =
+      if row.erow_anon then
+        ([], TyVarEnv.new_var policy)
+      else match row.erow_tail with
+      | Some tail_loc ->
+          let name = tail_loc.Location.txt in
+          if name <> "" && name.[0] = '\'' then begin
+            let vname = String.sub name 1 (String.length name - 1) in
+            check_tyvar_name env tail_loc.loc vname;
+            let v =
+              try TyVarEnv.lookup_local ~row_context:row_context vname
+              with Not_found ->
+                let v = TyVarEnv.new_var ~name:vname policy in
+                TyVarEnv.remember_used vname v tail_loc.loc;
+                v
+            in
+            ([], v)
+          end else begin
+            let try_lookup () =
+              let lident =
+                match Longident.unflatten (String.split_on_char '.' name) with
+                | Some lid -> lid
+                | None -> Longident.Lident name
+              in
+              let (path, decl) = Env.lookup_type ~loc:tail_loc.loc lident env in
+              match decl.type_manifest with
+              | Some manifest_ty ->
+                  begin match get_desc manifest_ty with
+                  | Teffect_row r ->
+                      let repr_r = effect_row_repr r in
+                      (repr_r.er_fields, repr_r.er_more)
+                  | _ -> ([], manifest_ty)
+                  end
+              | None ->
+                  ([], newconstr path [])
+            in
+            try try_lookup () with _ ->
+              check_tyvar_name env tail_loc.loc name;
+              let v =
+                try TyVarEnv.lookup_local ~row_context:row_context name
+                with Not_found ->
+                  let v = TyVarEnv.new_var ~name policy in
+                  TyVarEnv.remember_used name v tail_loc.loc;
+                  v
+              in
+              ([], v)
+          end
+      | None ->
+          if row.erow_closed then
+            ([], Btype.newgenty Tnil)
+          else
+            ([], TyVarEnv.new_var policy)
+    in
+    Types.create_effect_row ~fields:(fields @ extra_fields) ~more ~closed:row.erow_closed
+
 let rec transl_type env ~policy ?(aliased=false) ?(allow_open_arrow=true) ?(ambient_row=None) ~row_context styp =
   let delayed () =
     Builtin_attributes.warning_scope styp.ptyp_attributes
@@ -546,38 +615,7 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
           | None -> Btype.empty_pure_row ()
           end
       | Some row ->
-          if row.erow_closed && row.erow_labels = [] then
-            Btype.empty_pure_row ()
-          else
-            let fields =
-              List.map (fun (lbl_loc, flag) ->
-                let f = match flag with
-                  | Parsetree.F_Present -> Types.eff_present
-                  | Parsetree.F_Absent -> Types.eff_absent
-                  | Parsetree.F_Var _ -> Types.eff_var ()
-                in
-                lbl_loc.Location.txt, f
-              ) row.erow_labels
-            in
-            let more =
-              match row.erow_tail with
-              | Some tail_loc ->
-                  let name = tail_loc.Location.txt in
-                  check_tyvar_name env tail_loc.loc name;
-                  begin try
-                    TyVarEnv.lookup_local ~row_context:row_context name
-                  with Not_found ->
-                    let v = TyVarEnv.new_var ~name policy in
-                    TyVarEnv.remember_used name v tail_loc.loc;
-                    v
-                  end
-              | None ->
-                  if row.erow_closed then
-                    Btype.newgenty Tnil
-                  else
-                    TyVarEnv.new_var policy
-            in
-            Types.create_effect_row ~fields ~more ~closed:row.erow_closed
+          transl_effect_row env ~policy ~row_context row
     in
     let ty = newty (Tarrow(l, arg_ty, ret_cty.ctyp_type, commu_ok, eff)) in
     ctyp (Ttyp_arrow (l, arg_cty, ret_cty)) ty
@@ -883,6 +921,10 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
                 tpt_constraints = ptys;
                 tpt_txt = ptyp.ppt_path;
                 }, cty)) ty
+  | Ptyp_effect_row row ->
+      let eff = transl_effect_row env ~policy ~row_context row in
+      let ty = newty (Teffect_row eff) in
+      ctyp Ttyp_any ty
 
 and transl_fields env ~policy ~row_context o fields =
   (* Using a reference to a map rather than a hash table gives us

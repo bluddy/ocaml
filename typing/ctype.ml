@@ -2154,6 +2154,28 @@ let try_expand_safe_no_link = try_expand_safe ~link:false
 let () = forward_try_expand_safe := try_expand_safe_no_link
 let try_expand_safe = try_expand_safe ~link:true
 
+let rec expand_effect_row env row =
+  let r = effect_row_repr row in
+  let more = expand_head env r.er_more in
+  match get_desc more with
+  | Teffect_row r' ->
+      let r'' = expand_effect_row env r' in
+      let merged_fields =
+        List.fold_left (fun acc (lbl, f) ->
+          if List.mem_assoc lbl acc then acc else acc @ [lbl, f]
+        ) r.er_fields r''.er_fields
+      in
+      {
+        er_fields = merged_fields;
+        er_more = r''.er_more;
+        er_closed = r''.er_closed;
+      }
+  | _ ->
+      if get_desc more = Tnil then
+        { r with er_more = more; er_closed = true }
+      else
+        { r with er_more = more }
+
 (* Expand until we find a non-abstract type declaration,
    use try_expand_safe to avoid raising "Unify _" when
    called on recursive types
@@ -3678,6 +3700,8 @@ and unify3 uenv t1' t2' =
             (unify uenv)
       | (Tpackage pack1, Tpackage pack2) ->
           unify_package uenv (get_level t1') pack1 (get_level t2') pack2
+      | (Teffect_row eff1, Teffect_row eff2) ->
+          unify_effect_rows uenv eff1 eff2
       | (Tnil,  Tconstr _ ) ->
           raise_for Unify (Obj (Abstract_row Second))
       | (Tconstr _,  Tnil ) ->
@@ -3784,8 +3808,9 @@ and unify_effect_flags _uenv f1 f2 =
       raise_unexplained_for Unify
 
 and unify_effect_rows uenv row1 row2 =
-  let r1 = effect_row_repr row1 in
-  let r2 = effect_row_repr row2 in
+  let env = get_env uenv in
+  let r1 = expand_effect_row env row1 in
+  let r2 = expand_effect_row env row2 in
   let only1, only2, pairs = merge_effect_row_fields r1.er_fields r2.er_fields in
   List.iter (fun (_lbl, f1, f2) ->
     unify_effect_flags uenv f1 f2
@@ -4690,6 +4715,7 @@ let close_unconstrained_effect_rows env params sign =
     if not (TypeSet.mem ty !visited) then begin
       visited := TypeSet.add ty !visited;
       match get_desc ty with
+      | Tvar _ -> row_vars := TypeSet.add ty !row_vars
       | Tarrow (_, t1, t2, _, eff) ->
           let r = Types.effect_row_repr eff in
           if not r.er_closed then begin
@@ -4896,8 +4922,8 @@ let rec moregen type_pairs env t1 t2 =
               eq_labels Moregen ~in_pattern_mode:false l1 l2;
               moregen type_pairs env t1 t2;
               moregen type_pairs env u1 u2;
-              let r1 = effect_row_repr eff1 in
-              let r2 = effect_row_repr eff2 in
+              let r1 = expand_effect_row env eff1 in
+              let r2 = expand_effect_row env eff2 in
               if r1.er_closed && r1.er_fields = [] then ()
               else begin
                 List.iter (fun (lbl1, f1) ->
@@ -4939,8 +4965,8 @@ let rec moregen type_pairs env t1 t2 =
                 identifier_escape_for Moregen env' [id1] u1;
                 moregen type_pairs env u1 u2
           | (Teffect_row eff1, Teffect_row eff2) ->
-              let r1 = effect_row_repr eff1 in
-              let r2 = effect_row_repr eff2 in
+              let r1 = expand_effect_row env eff1 in
+              let r2 = expand_effect_row env eff2 in
               if r1.er_closed && r1.er_fields = [] then ()
               else begin
                 List.iter (fun (lbl1, f1) ->
@@ -5331,10 +5357,21 @@ let rec eqtype rename type_pairs subst env t1 t2 =
               eq_labels Equality ~in_pattern_mode:false l1 l2;
               eqtype rename type_pairs subst env t1 t2;
               eqtype rename type_pairs subst env u1 u2;
-              let r1 = effect_row_repr eff1 in
-              let r2 = effect_row_repr eff2 in
-              if r1.er_closed && r2.er_closed && r1.er_fields = [] && r2.er_fields = [] then ()
-              else eqtype rename type_pairs subst env r1.er_more r2.er_more
+              let r1 = expand_effect_row env eff1 in
+              let r2 = expand_effect_row env eff2 in
+              if r1.er_closed && r2.er_closed then begin
+                let f1 = List.sort (fun (s1, _) (s2, _) -> String.compare s1 s2) r1.er_fields in
+                let f2 = List.sort (fun (s1, _) (s2, _) -> String.compare s1 s2) r2.er_fields in
+                if List.length f1 <> List.length f2 then raise_unexplained_for Equality;
+                List.iter2 (fun (s1, fl1) (s2, fl2) ->
+                  if s1 <> s2 then raise_unexplained_for Equality;
+                  match effect_flag_repr fl1, effect_flag_repr fl2 with
+                  | EF_present, EF_present
+                  | EF_absent, EF_absent -> ()
+                  | _ -> raise_unexplained_for Equality
+                ) f1 f2
+              end else
+                eqtype rename type_pairs subst env r1.er_more r2.er_more
           | (Tfunctor (l1, id1, pack1, t1), Tfunctor (l2, id2, pack2, t2)) ->
               eq_labels Equality ~in_pattern_mode:false l1 l2;
               eqtype_package rename type_pairs subst env
@@ -5362,9 +5399,21 @@ let rec eqtype rename type_pairs subst env t1 t2 =
               identifier_escape_for Equality env' [id2] u2;
               eqtype rename type_pairs subst env u1 u2
           | (Teffect_row eff1, Teffect_row eff2) ->
-              let r1 = effect_row_repr eff1 in
-              let r2 = effect_row_repr eff2 in
-              eqtype rename type_pairs subst env r1.er_more r2.er_more
+              let r1 = expand_effect_row env eff1 in
+              let r2 = expand_effect_row env eff2 in
+              if r1.er_closed && r2.er_closed then begin
+                let f1 = List.sort (fun (s1, _) (s2, _) -> String.compare s1 s2) r1.er_fields in
+                let f2 = List.sort (fun (s1, _) (s2, _) -> String.compare s1 s2) r2.er_fields in
+                if List.length f1 <> List.length f2 then raise_unexplained_for Equality;
+                List.iter2 (fun (s1, fl1) (s2, fl2) ->
+                  if s1 <> s2 then raise_unexplained_for Equality;
+                  match effect_flag_repr fl1, effect_flag_repr fl2 with
+                  | EF_present, EF_present
+                  | EF_absent, EF_absent -> ()
+                  | _ -> raise_unexplained_for Equality
+                ) f1 f2
+              end else
+                eqtype rename type_pairs subst env r1.er_more r2.er_more
           | (Ttuple tl1, Ttuple tl2) ->
               eqtype_labeled_list rename type_pairs subst env tl1 tl2
           | (Tconstr (p1, tl1, _), Tconstr (p2, tl2, _))
@@ -6134,8 +6183,8 @@ let rec subtype_rec env trace t1 t2 constraints =
             u1 u2
             constraints
         in
-        let r1 = effect_row_repr eff1 in
-        let r2 = effect_row_repr eff2 in
+        let r1 = expand_effect_row env eff1 in
+        let r2 = expand_effect_row env eff2 in
         if r1.er_closed && r1.er_fields = [] then
           constraints
         else begin
@@ -6192,8 +6241,8 @@ let rec subtype_rec env trace t1 t2 constraints =
         in
         subtype_functor env trace id2 pack2 u1 u2 constraints
     | (Teffect_row eff1, Teffect_row eff2) ->
-        let r1 = effect_row_repr eff1 in
-        let r2 = effect_row_repr eff2 in
+        let r1 = expand_effect_row env eff1 in
+        let r2 = expand_effect_row env eff2 in
         if r1.er_closed && r1.er_fields = [] then
           constraints
         else begin

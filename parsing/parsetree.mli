@@ -104,6 +104,8 @@ and core_type_desc =
             - [T1 -[ Eff | 'e ]-> T2] when [eff] is [Some ...],
             - [T1 -[]-> T2]          when [eff] is [Some { erow_labels = []; erow_tail = None }].
          *)
+  | Ptyp_effect_row of effect_row
+      (** [Ptyp_effect_row(eff)] represents a standalone effect row [-[ ... ]-]. *)
   | Ptyp_tuple of (string option * core_type) list
       (** [Ptyp_tuple(tl)] represents a product type:
           - [T1 * ... * Tn]
@@ -237,6 +239,7 @@ and effect_row = {
   erow_labels : (label loc * presence_flag) list;
   erow_tail   : string loc option;
   erow_closed : bool;
+  erow_anon   : bool;
 }
 
 and presence_flag =
@@ -979,6 +982,8 @@ and signature_item_desc =
       (** [class c1 : ... and ... and cn : ...] *)
   | Psig_class_type of class_type_declaration list
       (** [class type ct1 = ... and ... and ctn = ...] *)
+  | Psig_effect of effect_declaration
+      (** [effect eff] or [effect eff = -[ ... ]-] *)
   | Psig_attribute of attribute  (** [[\@\@\@id]] *)
   | Psig_extension of extension * attributes  (** [[%%id]] *)
 
@@ -1012,6 +1017,14 @@ and module_type_declaration =
    - [S] for abstract module type declaration,
      when {{!module_type_declaration.pmtd_type}[pmtd_type]} is [None].
 *)
+
+and effect_declaration =
+    {
+     ped_name: string loc;
+     ped_manifest: effect_row option;
+     ped_attributes: attributes;
+     ped_loc: Location.t;
+    }
 
 and 'a open_infos =
     {
@@ -1068,6 +1081,10 @@ and with_constraint =
       (** [with type X.t := ..., same format as [Pwith_type]] *)
   | Pwith_modsubst of Longident.t loc * Longident.t loc
       (** [with module X.Y := Z] *)
+  | Pwith_effect of Longident.t loc * effect_row
+      (** [with effect X.eff = -[ ... ]-] *)
+  | Pwith_effectsubst of Longident.t loc * effect_row
+      (** [with effect X.eff := -[ ... ]-] *)
 
 (** {2 Value expressions for the module language} *)
 
@@ -1127,6 +1144,8 @@ and structure_item_desc =
       (** [class c1 = ... and ... and cn = ...] *)
   | Pstr_class_type of class_type_declaration list
       (** [class type ct1 = ... and ... and ctn = ...] *)
+  | Pstr_effect of effect_declaration
+      (** [effect eff = -[ ... ]-] *)
   | Pstr_include of include_declaration  (** [include ME] *)
   | Pstr_attribute of attribute  (** [[\@\@\@id]] *)
   | Pstr_extension of extension * attributes  (** [[%%id]] *)

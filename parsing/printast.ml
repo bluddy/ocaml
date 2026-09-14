@@ -139,6 +139,22 @@ let labeled_tuple_element f i ppf (l, ct) =
   option i string ppf l;
   f i ppf ct
 
+let fmt_effect_row i ppf eff =
+  line (i+1) ppf "effect_row\n";
+  List.iter (fun (lbl, flag) ->
+    let flag_str = match flag with
+      | F_Present -> "Present"
+      | F_Absent -> "Absent"
+      | F_Var v -> Printf.sprintf "Var %s" v.txt
+    in
+    line (i+2) ppf "%s: %s\n" lbl.txt flag_str
+  ) eff.erow_labels;
+  (match eff.erow_tail with
+   | None -> ()
+   | Some tail -> line (i+2) ppf "tail: '%s\n" tail.txt);
+  line (i+2) ppf "closed: %b\n" eff.erow_closed;
+  line (i+2) ppf "anon: %b\n" eff.erow_anon
+
 let rec core_type i ppf x =
   line i ppf "core_type %a\n" fmt_location x.ptyp_loc;
   attributes i ppf x.ptyp_attributes;
@@ -153,20 +169,10 @@ let rec core_type i ppf x =
       core_type i ppf ct2;
       (match eff with
        | None -> ()
-       | Some eff ->
-           line (i+1) ppf "effect_row\n";
-           List.iter (fun (lbl, flag) ->
-             let flag_str = match flag with
-               | F_Present -> "Present"
-               | F_Absent -> "Absent"
-               | F_Var v -> Printf.sprintf "Var %s" v.txt
-             in
-             line (i+2) ppf "%s: %s\n" lbl.txt flag_str
-           ) eff.erow_labels;
-           (match eff.erow_tail with
-            | None -> ()
-            | Some tail -> line (i+2) ppf "tail: '%s\n" tail.txt);
-           line (i+2) ppf "closed: %b\n" eff.erow_closed;);
+       | Some eff -> fmt_effect_row i ppf eff);
+  | Ptyp_effect_row eff ->
+      line i ppf "Ptyp_effect_row\n";
+      fmt_effect_row i ppf eff;
   | Ptyp_tuple l ->
       line i ppf "Ptyp_tuple\n";
       list i (labeled_tuple_element core_type) ppf l;
@@ -819,6 +825,12 @@ and signature_item i ppf x =
   | Psig_class_type (l) ->
       line i ppf "Psig_class_type\n";
       list i class_type_declaration ppf l;
+  | Psig_effect ed ->
+      line i ppf "Psig_effect %s\n" ed.ped_name.txt;
+      attributes i ppf ed.ped_attributes;
+      (match ed.ped_manifest with
+       | None -> ()
+       | Some eff -> fmt_effect_row i ppf eff);
   | Psig_extension ((s, arg), attrs) ->
       line i ppf "Psig_extension \"%s\"\n" s.txt;
       attributes i ppf attrs;
@@ -854,6 +866,12 @@ and with_constraint i ppf x =
      line i ppf "Pwith_modtypesubst %a\n"
         fmt_longident_loc lid1;
       module_type (i+1) ppf mty
+  | Pwith_effect (lid, eff) ->
+      line i ppf "Pwith_effect %a\n" fmt_longident_loc lid;
+      fmt_effect_row i ppf eff
+  | Pwith_effectsubst (lid, eff) ->
+      line i ppf "Pwith_effectsubst %a\n" fmt_longident_loc lid;
+      fmt_effect_row i ppf eff
 
 and module_expr i ppf x =
   line i ppf "module_expr %a\n" fmt_location x.pmod_loc;
@@ -937,6 +955,12 @@ and structure_item i ppf x =
   | Pstr_class_type (l) ->
       line i ppf "Pstr_class_type\n";
       list i class_type_declaration ppf l;
+  | Pstr_effect ed ->
+      line i ppf "Pstr_effect %s\n" ed.ped_name.txt;
+      attributes i ppf ed.ped_attributes;
+      (match ed.ped_manifest with
+       | None -> ()
+       | Some eff -> fmt_effect_row i ppf eff);
   | Pstr_include incl ->
       line i ppf "Pstr_include";
       attributes i ppf incl.pincl_attributes;
