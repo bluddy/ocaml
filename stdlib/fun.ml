@@ -13,8 +13,8 @@
 (*                                                                        *)
 (**************************************************************************)
 
-let id : 'a -[]-> 'a = fun x -> x
-let const : 'a -[]-> 'b -[]-> 'a = fun c _ -> c
+let id x = x
+let const c _ = c
 let compose f g x = f (g x)
 let flip f x y = f y x
 let negate p v = not (p v)

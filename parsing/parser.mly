@@ -842,7 +842,6 @@ let mk_directive ~loc name arg =
 %token MINUS                  "-"
 %token MINUSDOT               "-."
 %token MINUSGREATER           "->"
-%token PURE_ARROW              "-->"
 %token MODULE                 "module"
 %token MUTABLE                "mutable"
 %token NEW                    "new"
@@ -939,7 +938,7 @@ The precedences must be listed from low to high.
 %left     BAR                           /* pattern (p|p|p) */
 %nonassoc below_COMMA
 %left     COMMA                         /* expr/labeled_tuple (e,e,e) */
-%right    MINUSGREATER PURE_ARROW       /* function_type (t -> t -> t) */
+%right    MINUSGREATER                  /* function_type (t -> t -> t) */
 %right    OR BARBAR                     /* expr (e || e || e) */
 %right    AMPERSAND AMPERAMPER          /* expr (e && e && e) */
 %nonassoc below_EQUAL
@@ -3770,8 +3769,6 @@ alias_type:
 %inline effect_arrow:
   | MINUSGREATER
       { None }
-  | PURE_ARROW
-      { Some { erow_labels = []; erow_tail = None; erow_closed = true; erow_anon = false } }
   | MINUS LBRACKET RBRACKET MINUSGREATER
       { Some { erow_labels = []; erow_tail = None; erow_closed = true; erow_anon = false } }
   | MINUS LBRACKET row = effect_row RBRACKET MINUSGREATER

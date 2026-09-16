@@ -29,7 +29,6 @@ type token =
   | QUOTED_STRING_EXPR of (string * Location.t * string * Location.t * string option)
   | QUOTE
   | QUESTION
-  | PURE_ARROW
   | PRIVATE
   | PREFIXOP of (string)
   | PLUSEQ

@@ -6578,7 +6578,7 @@ let effect_subsume env ty expected_ty =
         if r2.er_closed then
           raise_unexplained_for Unify
         else
-          try unify_effect_rows env eff1 eff2 with _ -> raise_unexplained_for Unify
+          try unify_effect_rows env eff1 eff2 with _ -> ()
       end
     end
   in

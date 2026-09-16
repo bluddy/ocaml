@@ -443,8 +443,8 @@ and core_type ctxt f x =
     | Ptyp_arrow (l, ct1, ct2, eff) ->
         let arrow_str =
           match eff with
-          | None -> "->"
-          | Some { erow_labels = []; erow_tail = None; erow_closed = true; erow_anon = false } -> "-->"
+          | None
+          | Some { erow_labels = []; erow_tail = None; erow_closed = true; erow_anon = false } -> "->"
           | Some { erow_labels = []; erow_tail = None; erow_closed = false; erow_anon = true } -> "-[> ]->"
           | Some { erow_labels = []; erow_tail = Some tail; _ } ->
               let t_str = if tail.txt <> "" && tail.txt.[0] = '\'' then tail.txt else "'" ^ tail.txt in

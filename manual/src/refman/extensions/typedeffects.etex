@@ -1,0 +1,191 @@
+\section{s:typed-effects}{Typed algebraic effects}
+%HEVEA\cutname{typedeffects.html}
+\ikwd{effect\@\texttt{effect}}
+
+(Introduced in OCaml 5.6)
+
+\begin{syntax}
+typexpr:
+      ...
+    | typexpr '->' typexpr
+    | typexpr '-[' [effect-row] ']->' typexpr
+;
+effect-row:
+      effect-fields [ '|' effect-row-tail ]
+    | '>' effect-fields
+    | effect-row-tail
+;
+effect-fields:
+      constr-name { ',' constr-name }
+;
+effect-row-tail:
+      "'" ident
+    | [type-params] typeconstr-name
+;
+typedef:
+      ...
+    | [type-params] typeconstr-name '=' '-[' [effect-row] ']-'
+;
+str-item:
+      ...
+    | 'effect' eff-name [ '=' '-[' [effect-row] ']-' ]
+;
+sig-item:
+      ...
+    | 'effect' eff-name [ '=' '-[' [effect-row] ']-' ]
+;
+mod-constraint:
+      ...
+    | 'effect' eff-name '=' '-[' [effect-row] ']-'
+    | 'effect' eff-name ':=' '-[' [effect-row] ']-'
+;
+pattern:
+      ...
+    | 'effect' pattern ',' value-name
+;
+\end{syntax}
+
+Since OCaml 5.6, the language features a static effect typing system built on row
+polymorphism. The system tracks effect perform operations at compile time,
+ensuring that effectful operations are statically documented and soundly handled,
+while preserving full backward compatibility with standard OCaml code.
+
+\subsection{s:typed-effects-principles}{Core Principles}
+
+\subsubsection{s:typed-effects-pure-default}{Purity by Default}
+
+The standard function arrow "->" is defined as completely pure ($\emptyset$,
+closed empty row). Standard library definitions and existing user code without
+effect annotations infer pure arrow types:
+
+\begin{verbatim}
+val add : int -> int -> int
+val map_pure : ('a -> 'b) -> 'a list -> 'b list
+\end{verbatim}
+
+Computations that perform algebraic effects via "Effect.perform" require
+latent effect annotations on the arrows. An arrow of the form
+"t1 -[ E1, E2 | 'e ]-> t2" denotes a function that takes an argument of type
+"t1", produces a result of type "t2", and may perform effects "E1", "E2",
+as well as any effects contained in the row tail "'e".
+
+The syntax "-[ > E1, E2 ]-" is syntactic sugar for an anonymous open row with
+a fresh, unconstrained row tail.
+
+\subsubsection{s:typed-effects-subsumption}{Bidirectional Effect Subsumption}
+
+The type system implements bidirectional effect subsumption based on row
+inclusion ($R_1 \subseteq R_2$). A function with fewer effects may be passed
+directly to a context expecting wider effects without requiring explicit
+coercion syntax (":>"):
+
+\begin{verbatim}
+type _ Effect.t += Yield : unit Effect.t | Log : string -> unit Effect.t
+
+let f_pure () = ()
+let f_yield () = Effect.perform Yield
+
+(* Pure function subsumed into effectful list *)
+let tasks : (unit -[ Yield ]-> unit) list = [ f_pure; f_yield ]
+
+(* Pure callback subsumed into effectful higher-order parameter *)
+let run (worker : unit -[ Yield, Log ]-> unit) = ...
+let () = run f_pure
+\end{verbatim}
+
+Subsumption operates symmetrically across data structures (lists, tuples,
+records) and function arguments during type-directed checking.
+
+\subsection{s:typed-effects-handlers}{Handlers and Row Subtraction}
+
+When handling effects via deep or shallow pattern matching ("match ... with effect ..."),
+the handled effect constructors are subtracted from the computation's latent effect
+row ($R \setminus \{\ell\}$):
+
+\begin{verbatim}
+type _ Effect.t += Yield : unit Effect.t
+
+(* Yield is handled; remaining computation is purely unit -> int *)
+let run_pure () : int =
+  match 42 with
+  | v -> v
+  | effect Yield, k -> Effect.Deep.continue k ()
+
+(* Handler on open computation subtracts Yield, propagating 'e *)
+let run_rigid (type e) (f : unit -[ Yield | e ]-> int) : int =
+  match f () with
+  | v -> v
+  | effect Yield, k -> Effect.Deep.continue k ()
+\end{verbatim}
+
+The handler construct guarantees that handling a set of effects does not force
+handled labels onto pure enclosing scopes, preventing spurious effect leakage.
+
+\subsection{s:typed-effects-modules}{Modular Effects and Abstract Signatures}
+
+Signatures support abstract and manifest effect row specifications via the
+"effect" keyword:
+
+\begin{verbatim}
+module type RUNNER = sig
+  effect eff
+  val step : unit -[ eff ]-> bool
+end
+\end{verbatim}
+
+Modules can satisfy this signature by defining concrete effect equations:
+
+\begin{verbatim}
+module YieldRunner : (RUNNER with effect eff = -[ Yield ]-) = struct
+  effect eff = -[ Yield ]-
+  let step () = Effect.perform Yield; true
+end
+\end{verbatim}
+
+Destructive substitution ("with effect eff := ...") removes the abstract
+effect declaration from the signature and inlines the concrete row directly into
+all occurrences. Substituting an empty row "-[ ]-" collapses the arrows down to
+standard pure arrows:
+
+\begin{verbatim}
+module PureRunner : (RUNNER with effect eff := -[ ]-) = struct
+  let step () = true
+end
+(* Resulting signature: sig val step : unit -> bool end *)
+\end{verbatim}
+
+\subsection{s:typed-effects-polymorphism}{Higher-Order Combinators and Polymorphic Recursion}
+
+Higher-order functions that accept effectful callbacks parameterize over the
+callback's effect row using explicit polymorphism:
+
+\begin{verbatim}
+let rec map : 'a 'b 'e. ('a -['e]-> 'b) -> 'a list -['e]-> 'b list =
+  fun f -> function
+  | [] -> []
+  | x :: xs ->
+      let y = f x in
+      y :: map f xs
+\end{verbatim}
+
+When "map" is applied to a pure callback, the row variable "'e" instantiates to
+empty, yielding a completely pure function "'a list -> 'b list".
+
+For extensible GADT effect constructors carrying existential effect callbacks,
+the type system automatically widens the existential effect row into the
+enclosing polymorphic scope during pattern matching:
+
+\begin{verbatim}
+type _ Effect.t += Fork : 'e. (unit -['e]-> unit) -> unit Effect.t
+
+let rec run_all : 'e. (unit -['e]-> unit) list -> unit = function
+  | [] -> ()
+  | task :: rest ->
+      let spawned = ref [] in
+      (match task () with
+       | () -> ()
+       | effect (Fork child), k ->
+           spawned := child :: !spawned;
+           Effect.Deep.continue k ());
+      run_all (!spawned @ rest)
+\end{verbatim}

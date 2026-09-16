@@ -38,7 +38,7 @@ external equal : 'a -> 'a -> bool = "%equal"
     Equality between functional values raises [Invalid_argument].
     Equality between cyclic data structures may not terminate. *)
 
-external compare : 'a -[ ]-> 'a -[ ]-> int = "%compare"
+external compare : 'a -> 'a -> int = "%compare"
 (** [compare x y] returns [0] if [x] is equal to [y],
     a negative integer if [x] is less than [y], and a positive integer
     if [x] is greater than [y].  The ordering implemented by [compare]

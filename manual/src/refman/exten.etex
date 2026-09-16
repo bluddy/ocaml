@@ -31,6 +31,7 @@ that are implemented in OCaml, but not described in chapter \ref{c:refman}.
 \input{generalizedopens.tex}
 \input{bindingops.tex}
 \input{effects.tex}
+\input{typedeffects.tex}
 \input{arrayliterals.tex}
 \input{labeledtuples.tex}
 

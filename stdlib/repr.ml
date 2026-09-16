@@ -15,7 +15,7 @@
 external phys_equal : 'a -> 'a -> bool = "%eq"
 
 external equal : 'a -> 'a -> bool = "%equal"
-external compare : 'a -[ ]-> 'a -[ ]-> int = "%compare"
+external compare : 'a -> 'a -> int = "%compare"
 
 let min = Stdlib.min
 let max = Stdlib.max

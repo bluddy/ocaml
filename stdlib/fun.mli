@@ -21,10 +21,10 @@
 
 (** {1:combinators Combinators} *)
 
-val id : 'a -[]-> 'a
+val id : 'a -> 'a
 (** [id] is the identity function. For any argument [x], [id x] is [x]. *)
 
-val const : 'a -[]-> (_ -[]-> 'a)
+val const : 'a -> (_ -> 'a)
 (** [const c] is a function that always returns the value [c]. For any
     argument [x], [(const c) x] is [c]. *)
 

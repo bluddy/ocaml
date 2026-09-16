@@ -287,10 +287,9 @@ let print_arg_label ppf (lbl : Asttypes.arg_label) =
   | Optional s -> fprintf ppf "?%a:" print_lident s
 
 let print_effect_arrow ppf = function
-  | None ->
-      pp_print_string ppf " ->"
+  | None
   | Some { oer_labels = []; oer_tail = None; oer_closed = true } ->
-      pp_print_string ppf " -->"
+      pp_print_string ppf " ->"
   | Some { oer_labels = []; oer_tail = Some tail; _ } ->
       fprintf ppf " -[%s]->" tail
   | Some { oer_labels; oer_tail; oer_closed = _ } ->

@@ -86,7 +86,7 @@ val backtrace_status: unit -> bool
     @since 3.11
 *)
 
-val register_printer: (exn --> string option) --> unit
+val register_printer: (exn -> string option) -> unit
 (** [Printexc.register_printer fn] registers [fn] as an exception
     printer.  The printer should return [None] or raise an exception
     if it does not know how to convert the passed exception, and [Some

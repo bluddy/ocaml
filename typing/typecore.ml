@@ -739,9 +739,16 @@ let type_continuation_pat ?k_eff env expected_ty sp =
 
    [sexp] is used by error messages to report literals in their original
    formatting *)
+let widen_existential_type_hook = ref (fun _env ty -> ty)
+
 let unify_exp_types ?sexp loc env ty expected_ty =
   (* Format.eprintf "@[%a@ %a@]@." Printtyp.raw_type_expr exp.exp_type
     Printtyp.raw_type_expr expected_ty; *)
+  let ty =
+    match get_desc (expand_head env expected_ty) with
+    | Tvar _ -> !widen_existential_type_hook env ty
+    | _ -> ty
+  in
   try
     unify env ty expected_ty
   with
@@ -3173,7 +3180,7 @@ let collect_row_variables param_tys =
           if not r.er_closed then begin
             let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
             match get_desc more with
-            | Tvar _ -> row_vars := TypeSet.add more !row_vars
+            | Tvar _ | Tunivar _ -> row_vars := TypeSet.add more !row_vars
             | _ -> ()
           end;
           iter_type t1;
@@ -3235,6 +3242,63 @@ let emit_ambient_effect env eff =
 
 let finalize_ambient_scope _env ?param_tys:(_=[]) scope =
   scope.amb_row
+
+let find_in_scope_row_var () =
+  let rec search = function
+    | [] -> None
+    | scope :: rest ->
+        let vars = collect_row_variables scope.amb_param_tys in
+        match TypeSet.elements vars with
+        | v :: _ -> Some v
+        | [] ->
+            let amb_r = Types.effect_row_repr scope.amb_row in
+            if not amb_r.er_closed then begin
+              let amb_more = Transient_expr.type_expr (Transient_expr.repr amb_r.er_more) in
+              match get_desc amb_more with
+              | Tvar _ | Tunivar _ -> Some amb_more
+              | _ -> search rest
+            end else
+              search rest
+  in
+  search !ambient_effect_stack
+
+let get_existential_row_var eff =
+  let r = Types.effect_row_repr eff in
+  if r.er_closed then None
+  else
+    let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
+    match get_desc more with
+    | Tconstr (p, _, _) ->
+        let name = Path.last p in
+        if String.length name > 0 && name.[0] = '$' then Some more
+        else None
+    | _ -> None
+
+let widen_existential_row eff in_scope_var =
+  let r = Types.effect_row_repr eff in
+  Types.create_effect_row ~fields:r.er_fields ~more:in_scope_var ~closed:false
+
+let rec widen_existential_type env ty =
+  let ty_repr = expand_head env ty in
+  match get_desc ty_repr with
+  | Tarrow (l, t1, t2, comm, eff) ->
+      let new_eff =
+        match get_existential_row_var eff with
+        | Some _ ->
+            begin match find_in_scope_row_var () with
+            | Some in_scope_var -> widen_existential_row eff in_scope_var
+            | None -> eff
+            end
+        | None -> eff
+      in
+      newty2 ~level:(get_level ty_repr)
+        (Tarrow (l, widen_existential_type env t1, widen_existential_type env t2, comm, new_eff))
+  | Ttuple l ->
+      newty2 ~level:(get_level ty_repr)
+        (Ttuple (List.map (fun (lbl, t) -> (lbl, widen_existential_type env t)) l))
+  | _ -> ty
+
+let () = widen_existential_type_hook := widen_existential_type
 
 let current_body_effect = ref (None : Types.effect_row option)
 let delayed_apply_effects = ref ([] : Types.effect_row list)
@@ -5048,14 +5112,6 @@ and type_expect_
           let handled_labels =
             List.concat_map (fun c -> collect_eff_labels c.pc_lhs) eff_caselist
           in
-          if handled_labels <> [] then begin
-            let handled_fields =
-              List.map (fun lbl -> (lbl, Types.eff_present)) handled_labels
-            in
-            let handled_row = Btype.new_effect_row handled_fields in
-            try Ctype.unify_effect_rows env r_arg handled_row
-            with Ctype.Unify _ -> ()
-          end;
           let r_arg_repr = Types.effect_row_repr r_arg in
           let remaining_fields =
             if universal then []
@@ -5065,7 +5121,7 @@ and type_expect_
               ) r_arg_repr.er_fields
           in
           let r_rem =
-            if universal && r_arg_repr.er_closed then
+            if (universal && r_arg_repr.er_closed) || (handled_labels <> [] && r_arg_repr.er_fields = []) then
               Btype.empty_pure_row ()
             else
               Types.create_effect_row ~fields:remaining_fields
@@ -5148,14 +5204,6 @@ and type_expect_
           let handled_labels =
             List.concat_map (fun c -> collect_eff_labels c.pc_lhs) eff_caselist
           in
-          if handled_labels <> [] then begin
-            let handled_fields =
-              List.map (fun lbl -> (lbl, Types.eff_present)) handled_labels
-            in
-            let handled_row = Btype.new_effect_row handled_fields in
-            try Ctype.unify_effect_rows env r_body handled_row
-            with Ctype.Unify _ -> ()
-          end;
           let r_body_repr = Types.effect_row_repr r_body in
           let remaining_fields =
             if universal then []
@@ -5165,7 +5213,7 @@ and type_expect_
               ) r_body_repr.er_fields
           in
           let r_rem =
-            if universal && r_body_repr.er_closed then
+            if (universal && r_body_repr.er_closed) || (handled_labels <> [] && r_body_repr.er_fields = []) then
               Btype.empty_pure_row ()
             else
               Types.create_effect_row ~fields:remaining_fields
@@ -7802,19 +7850,11 @@ and type_effect_cases
       let ty_k_res = Option.value ~default:ty_res k_res in
       List.map2 (fun case cont ->
         with_local_level begin fun () ->
-          let new_env, ty_arg, ty_cont =
-            let decl = Ctype.new_local_type ~loc:case.Parsetree.pc_lhs.ppat_loc Definition in
-            let scope = create_scope () in
-            let name = Ctype.get_new_abstract_name env "%eff" in
-            let id = Ident.create_scoped ~scope name in
-            let new_env = Env.add_type ~check:false id decl env in
-            let ty_eff = newgenty (Tconstr (Path.Pident id,[],ref Mnil)) in
-            new_env,
-            Predef.type_eff ty_eff,
-            Predef.type_continuation ty_eff ty_k_res
-          in
+          let ty_eff = newvar () in
+          let ty_arg = Predef.type_eff ty_eff in
+          let ty_cont = Predef.type_continuation ty_eff ty_k_res in
           let cont_desc = type_continuation_pat ?k_eff env ty_cont cont in
-          let cases, _ = type_cases category new_env ty_arg
+          let cases, _ = type_cases category env ty_arg
             ty_res_explained ~conts:[cont_desc] ~check_if_total:false loc [case]
           in
           List.hd cases

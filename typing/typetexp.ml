@@ -102,7 +102,6 @@ module TyVarEnv : sig
   (* see mli file *)
 
   type policy
-  val is_fixed : policy -> bool
   val fixed_policy : policy (* no wildcards allowed *)
   val extensible_policy : policy (* common case *)
   val univars_policy : policy (* fresh variables are univars (in methods) *)
@@ -327,7 +326,6 @@ end = struct
   let fixed_policy = { flavor = Unification; extensibility = Fixed }
   let extensible_policy = { flavor = Unification; extensibility = Extensible }
   let univars_policy = { flavor = Universal; extensibility = Extensible }
-  let is_fixed { extensibility } = extensibility = Fixed
 
   let add_pre_univar tv = function
     | { flavor = Universal } ->
@@ -581,18 +579,8 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
     in
     ctyp (Ttyp_var name) ty
   | Ptyp_arrow(l, st1, st2, eff_opt) ->
-    let amb =
-      match ambient_row with
-      | Some _ as a -> a
-      | None ->
-          if allow_open_arrow && not (TyVarEnv.is_fixed policy) then
-            let v = TyVarEnv.new_var policy in
-            Some (Types.create_effect_row ~fields:[] ~more:v ~closed:false)
-          else
-            None
-    in
-    let arg_cty = transl_type env ~policy ~allow_open_arrow ~ambient_row:amb ~row_context st1 in
-    let ret_cty = transl_type env ~policy ~allow_open_arrow ~ambient_row:amb ~row_context st2 in
+    let arg_cty = transl_type env ~policy ~row_context st1 in
+    let ret_cty = transl_type env ~policy ~row_context st2 in
     let arg_ty = arg_cty.ctyp_type in
     let arg_ty =
       if Btype.is_Tpoly arg_ty then arg_ty else newmono arg_ty
@@ -610,10 +598,7 @@ and transl_type_aux env ~row_context ~aliased ~policy ?(allow_open_arrow=true) ?
     let eff =
       match eff_opt with
       | None ->
-          begin match amb with
-          | Some r -> r
-          | None -> Btype.empty_pure_row ()
-          end
+          Btype.empty_pure_row ()
       | Some row ->
           transl_effect_row env ~policy ~row_context row
     in
