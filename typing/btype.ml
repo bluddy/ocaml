@@ -346,17 +346,21 @@ let empty_pure_row () =
     ~more:(newty3 ~level:generic_level ~scope:0 Tnil)
     ~closed:true
 
+let default_var_level = ref (fun () -> generic_level)
+
 let fresh_ambient_row_var ?level () =
-  let v = match level with None -> newgenvar () | Some lvl -> newty2 ~level:lvl (Tvar None) in
+  let lvl = match level with None -> !default_var_level () | Some lvl -> lvl in
   create_effect_row
     ~fields:[]
-    ~more:v
+    ~more:(newty2 ~level:lvl (Tvar None))
     ~closed:false
 
 let new_effect_row ?(closed=false) ?level fields =
   let more =
     if closed then newty3 ~level:generic_level ~scope:0 Tnil
-    else match level with None -> newgenvar () | Some lvl -> newty2 ~level:lvl (Tvar None)
+    else
+      let lvl = match level with None -> !default_var_level () | Some lvl -> lvl in
+      newty2 ~level:lvl (Tvar None)
   in
   create_effect_row ~fields ~more ~closed
 

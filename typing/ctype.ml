@@ -376,6 +376,8 @@ let newvar2 ?name level     = newty2 ~level:level (Tvar name)
 let new_global_var ?name () = newty2 ~level:!global_level (Tvar name)
 let newstub ~scope          = newty3 ~level:!current_level ~scope (Tvar None)
 
+let () = Btype.default_var_level := (fun () -> !current_level)
+
 let newobj fields      = newty (Tobject (fields, ref None))
 
 let newconstr path tyl = newty (Tconstr (path, tyl, ref Mnil))

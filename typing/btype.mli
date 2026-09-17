@@ -159,6 +159,7 @@ val iter_row: (type_expr -> unit) -> row_desc -> unit
 val fold_row: ('a -> type_expr -> 'a) -> 'a -> row_desc -> 'a
 
 (**** Operations on effect rows ****)
+val default_var_level : (unit -> int) ref
 val empty_pure_row : unit -> effect_row
 val fresh_ambient_row_var : ?level:int -> unit -> effect_row
 val new_effect_row : ?closed:bool -> ?level:int -> (label * effect_flag) list -> effect_row

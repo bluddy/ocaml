@@ -20,6 +20,9 @@ let rec run_all : 'e. (unit -['e]-> unit) list -> unit = function
            Effect.Deep.continue k ());
       run_all (!spawned @ rest)
 
+type ('a, 'b) eq = Refl : ('a, 'a) eq
+let cast (type a b) (Refl : (a, b) eq) (x : a) : b = x
+
 let () =
   let trace = ref [] in
   let t1 () =
@@ -29,4 +32,5 @@ let () =
   in
   run_all [t1];
   assert (List.rev !trace = ["t1_start"; "t1_end"; "child1"]);
+  assert (cast Refl 42 = 42);
   print_endline "6.6 OK"

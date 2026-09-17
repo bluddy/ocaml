@@ -3240,7 +3240,16 @@ let emit_ambient_effect env eff =
         end
   end
 
-let finalize_ambient_scope _env ?param_tys:(_=[]) scope =
+let finalize_ambient_scope env ?(param_tys=[]) scope =
+  let r = Types.effect_row_repr scope.amb_row in
+  if r.er_fields = [] && not r.er_closed then begin
+    let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
+    let param_vars = collect_row_variables (param_tys @ scope.amb_param_tys) in
+    if not (TypeSet.mem more param_vars) then begin
+      try Ctype.unify_effect_rows env scope.amb_row (Btype.empty_pure_row ())
+      with Ctype.Unify _ -> ()
+    end
+  end;
   scope.amb_row
 
 let find_in_scope_row_var () =
@@ -3279,8 +3288,7 @@ let widen_existential_row eff in_scope_var =
   Types.create_effect_row ~fields:r.er_fields ~more:in_scope_var ~closed:false
 
 let rec widen_existential_type env ty =
-  let ty_repr = expand_head env ty in
-  match get_desc ty_repr with
+  match get_desc ty with
   | Tarrow (l, t1, t2, comm, eff) ->
       let new_eff =
         match get_existential_row_var eff with
@@ -3291,10 +3299,12 @@ let rec widen_existential_type env ty =
             end
         | None -> eff
       in
-      newty2 ~level:(get_level ty_repr)
-        (Tarrow (l, widen_existential_type env t1, widen_existential_type env t2, comm, new_eff))
+      if new_eff == eff then ty
+      else
+        newty2 ~level:(get_level ty)
+          (Tarrow (l, widen_existential_type env t1, widen_existential_type env t2, comm, new_eff))
   | Ttuple l ->
-      newty2 ~level:(get_level ty_repr)
+      newty2 ~level:(get_level ty)
         (Ttuple (List.map (fun (lbl, t) -> (lbl, widen_existential_type env t)) l))
   | _ -> ty
 
