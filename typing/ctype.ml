@@ -4791,6 +4791,7 @@ let close_unconstrained_effect_rows env params sign =
       | _ -> ()
     end
   in
+  Vars.iter (fun _ (_, _, ty) -> close_ty TypeSet.empty ty) sign.csig_vars;
   Meths.iter (fun _ (_, _, ty) -> close_ty TypeSet.empty ty) sign.csig_meths;
   close_ty TypeSet.empty sign.csig_self
 

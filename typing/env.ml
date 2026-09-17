@@ -2894,7 +2894,7 @@ type _ load =
   | Load : module_data load
   | Don't_load : unit load
 
-let lookup_ident_module (type a) (load : a load) ~errors ~use ~loc s env =
+let lookup_ident_module (type a) (load : a load) ~errors ~use ~loc s env : Path.t * a =
   let path, data =
     match find_name_module ~mark:use s env.modules with
     | res -> res
