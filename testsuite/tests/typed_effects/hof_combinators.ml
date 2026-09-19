@@ -34,4 +34,7 @@ let () =
   let res = run_yield (fun () -> test_eff_map [10; 20]) in
   assert (res = [10; 20]);
   assert (!count = 2);
+  let opt_fun ?loc ~x = function y -> y + x in
+  let piped = 5 |> opt_fun ~x:10 in
+  assert (piped = 15);
   print_endline "6.4 OK"

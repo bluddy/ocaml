@@ -4541,6 +4541,7 @@ let check_apply_prim_type prim typ =
       let a = tpoly_get_mono a in
       begin match get_desc b with
       | Tarrow(Nolabel,c,d,_,_) when tpoly_is_mono c ->
+          let c = tpoly_get_mono c in
           let f, x, res =
             match prim with
             | Apply -> a, c, d
