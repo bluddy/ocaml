@@ -3219,9 +3219,9 @@ let emit_ambient_effect env eff =
         if not r.er_closed then begin
           let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
           match get_desc more with
-          | Tvar _ ->
+          | Tvar _ | Tunivar _ ->
               let param_vars = collect_row_variables scope.amb_param_tys in
-              if TypeSet.mem more param_vars then begin
+              if TypeSet.mem more param_vars || (match get_desc more with Tunivar _ -> true | _ -> false) then begin
                 let amb_r = Types.effect_row_repr scope.amb_row in
                 if not amb_r.er_closed then begin
                   let amb_more = Transient_expr.type_expr (Transient_expr.repr amb_r.er_more) in
@@ -3244,11 +3244,15 @@ let finalize_ambient_scope env ?(param_tys=[]) scope =
   let r = Types.effect_row_repr scope.amb_row in
   if r.er_fields = [] && not r.er_closed then begin
     let more = Transient_expr.type_expr (Transient_expr.repr r.er_more) in
-    let param_vars = collect_row_variables (param_tys @ scope.amb_param_tys) in
-    if not (TypeSet.mem more param_vars) then begin
-      try Ctype.unify_effect_rows env scope.amb_row (Btype.empty_pure_row ())
-      with Ctype.Unify _ -> ()
-    end
+    match get_desc more with
+    | Tunivar _ -> ()
+    | Tvar _ when get_level more < get_current_level () -> ()
+    | _ ->
+        let param_vars = collect_row_variables (param_tys @ scope.amb_param_tys) in
+        if not (TypeSet.mem more param_vars) then begin
+          try Ctype.unify_effect_rows env scope.amb_row (Btype.empty_pure_row ())
+          with Ctype.Unify _ -> ()
+        end
   end;
   scope.amb_row
 

@@ -37,4 +37,14 @@ let () =
   let opt_fun ?loc ~x = function y -> y + x in
   let piped = 5 |> opt_fun ~x:10 in
   assert (piped = 15);
+  let local_helper : 'a 'e. ('a -['e]-> int) -> 'a list -['e]-> int = fun f l ->
+    let rec aux = function
+      | [] -> 0
+      | x :: xs -> f x + aux xs
+    in
+    aux l
+  in
+  let local_res = run_yield (fun () -> local_helper (fun x -> Effect.perform Yield; x) [1; 2]) in
+  assert (local_res = 3);
+  assert (!count = 4);
   print_endline "6.4 OK"
