@@ -121,3 +121,8 @@ dune exec ./bin/main.exe
 | **Performing an effect** | `Effect.perform (Eff arg)` | Yields control to the enclosing ambient handler. |
 | **Handling effects** | `match body () with`<br>`\| v -> v`<br>`\| effect (Eff x), k -> Effect.Deep.continue k res` | Deep pattern matching on effects with continuation `k`. |
 | **Effectful Standard Library** | `open Stdlib_v2` | Overlays standard library modules (`List`, `Array`, `Option`, `Result`, `Seq`, `Fun`) with effect-polymorphic HOFs. |
+| **Abstract effect in signature** | `effect eff` | Declares an abstract effect row in a module signature. |
+| **Manifest effect alias** | `effect eff = -[ Log, Yield ]-` | Defines or refines a concrete effect row in a module. |
+| **Functor with effect parameter** | `module Make (E : sig effect eff val act : unit -[ eff ]-> unit end)` | Functor abstracting over effect capabilities. |
+| **Module type constraint** | `RUNNER with effect eff = -[ Yield ]-` | Refines an abstract effect in a signature. |
+| **Destructive substitution** | `RUNNER with effect eff := -[ ]-` | Destructively substitutes an effect (e.g. to pure), simplifying signatures. |
