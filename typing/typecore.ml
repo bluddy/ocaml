@@ -3229,6 +3229,8 @@ let emit_ambient_effect env eff =
                   let amb_more = Transient_expr.type_expr (Transient_expr.repr amb_r.er_more) in
                   if not (Types.eq_type amb_more more) then
                     try Ctype.unify env amb_more more with Ctype.Unify _ -> ()
+                end else begin
+                  try Ctype.unify_effect_rows env scope.amb_row eff with Ctype.Unify _ -> ()
                 end
               end
           | Tconstr _ ->
@@ -3237,6 +3239,8 @@ let emit_ambient_effect env eff =
                 let amb_more = Transient_expr.type_expr (Transient_expr.repr amb_r.er_more) in
                 if not (Types.eq_type amb_more more) then
                   try Ctype.unify env amb_more more with Ctype.Unify _ -> ()
+              end else begin
+                try Ctype.unify_effect_rows env scope.amb_row eff with Ctype.Unify _ -> ()
               end
           | _ -> ()
         end

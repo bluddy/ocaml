@@ -80,4 +80,14 @@ let () =
       assert (x = 99);
       assert (next () = Seq_test.Nil)
   | Seq_test.Nil -> assert false);
+  (* Test mutable list of callbacks executed in pure HOF does not leak weak row vars *)
+  let module Caches_test = struct
+    let invalidators = ref []
+    let register ~invalidate = invalidators := invalidate :: !invalidators
+    let invalidate () = List.iter (fun f -> f ()) !invalidators
+  end in
+  let called = ref false in
+  Caches_test.register ~invalidate:(fun () -> called := true);
+  Caches_test.invalidate ();
+  assert (!called);
   print_endline "6.4 OK"
