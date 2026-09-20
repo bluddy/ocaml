@@ -4216,6 +4216,7 @@ type filter_arrow_failure =
 type filtered_arrow =
   { ty_param : type_expr;
     ty_ret : type_expr;
+    ty_eff : effect_row;
   }
 
 let function_type l ~param_hole level =
@@ -4235,8 +4236,9 @@ let function_type l ~param_hole level =
     end
   in
   let t2 = newvar2 level in
-  let t' = newty2 ~level (Tarrow (l, t1, t2, commu_ok, fresh_ambient_row_var ~level ())) in
-  t', t1, t2
+  let eff = fresh_ambient_row_var ~level () in
+  let t' = newty2 ~level (Tarrow (l, t1, t2, commu_ok, eff)) in
+  t', t1, t2, eff
 
 let arrow_unification_error ~in_apply env t t' trace =
   let diff =
@@ -4248,23 +4250,23 @@ let arrow_unification_error ~in_apply env t t' trace =
   Error (Unification_error (expand_to_unification_error env (diff :: trace)))
 
 let arrow_unify_var ~param_hole l t =
-  let t', ty_param, ty_ret =
+  let t', ty_param, ty_ret, ty_eff =
     function_type l ~param_hole (get_level t)
   in
   link_type t t';
-  { ty_param; ty_ret }
+  { ty_param; ty_ret; ty_eff }
 
 let filter_arrow env ~in_apply t l ~param_hole =
   match expand_head_trace env t with
   | exception Unify_trace trace ->
-      let t', _, _ = function_type l ~param_hole (get_level t) in
+      let t', _, _, _ = function_type l ~param_hole (get_level t) in
       arrow_unification_error ~in_apply env t t' trace
   | t ->
     match get_desc t with
     | Tvar _ -> Ok (arrow_unify_var ~param_hole l t)
-    | Tarrow(l', ty_param, ty_ret, _, _) ->
+    | Tarrow(l', ty_param, ty_ret, _, ty_eff) ->
         if l = l' || !Clflags.classic && l = Nolabel && not (is_optional l')
-        then Ok { ty_param; ty_ret }
+        then Ok { ty_param; ty_ret; ty_eff }
         else Error (Label_mismatch
                       { got = l; expected = l'; expected_type = t })
     | Tfunctor (l', id_us, pack, ty_ret) ->
@@ -4283,18 +4285,19 @@ let filter_arrow env ~in_apply t l ~param_hole =
               arrow_unification_error ~in_apply env t t' trace
           | () ->
               let ty_param = newmono_package ~level:(get_level t) pack in
+              let ty_eff = fresh_ambient_row_var ~level:(get_level t) () in
               let t' = newty2 ~level:(get_level t)
-                  (Tarrow (l, ty_param, ty_ret, commu_ok, fresh_ambient_row_var ~level:(get_level t) ()))
+                  (Tarrow (l, ty_param, ty_ret, commu_ok, ty_eff))
               in
               link_type t t';
-              Ok { ty_param; ty_ret }
+              Ok { ty_param; ty_ret; ty_eff }
         end
     | _ -> Error Not_a_function
 
 let filter_functor env t l =
   match expand_head_trace env t with
   | exception Unify_trace trace ->
-      let t', _, _ = function_type l ~param_hole:false (get_level t) in
+      let t', _, _, _ = function_type l ~param_hole:false (get_level t) in
       arrow_unification_error ~in_apply:true env t t' trace
   | t ->
       match get_desc t with
@@ -4310,7 +4313,7 @@ let filter_arity env t l =
   let param_hole = false in
   match expand_head_trace env t with
   | exception Unify_trace trace ->
-      let t', _, _ = function_type l ~param_hole (get_level t) in
+      let t', _, _, _ = function_type l ~param_hole (get_level t) in
       arrow_unification_error ~in_apply:false env t t' trace
   | t ->
       match get_desc t with
@@ -6536,56 +6539,75 @@ let subtype env ty1 ty2 =
         (List.rev constraints))
 
 let effect_subsume env ty expected_ty =
-  let visited = TypePairs.create 17 in
-  let rec sub env t1 t2 =
-    let t1 = expand_head env t1 in
-    let t2 = expand_head env t2 in
-    if eq_type t1 t2 then ()
-    else if TypePairs.mem visited (t1, t2) then ()
-    else begin
-      TypePairs.add visited (t1, t2);
-      match get_desc t1, get_desc t2 with
-      | Tvar _, _ | _, Tvar _ ->
-          unify env t1 t2
-      | Tarrow (l1, a1, r1, _, eff1), Tarrow (l2, a2, r2, _, eff2)
-        when compatible_labels ~in_pattern_mode:false l1 l2 ->
-          sub env a2 a1;
-          sub env r1 r2;
-          sub_effect_row env eff1 eff2
-      | Ttuple l1, Ttuple l2 when List.length l1 = List.length l2 ->
-          List.iter2 (fun (_, t1) (_, t2) -> sub env t1 t2) l1 l2
-      | _ ->
-          unify env t1 t2
-    end
-  and sub_effect_row env eff1 eff2 =
-    let r1 = effect_row_repr eff1 in
-    let r2 = effect_row_repr eff2 in
-    if r1.er_closed && r1.er_fields = [] then
-      ()
-    else begin
-      List.iter (fun (lbl1, f1) ->
-        if effect_flag_repr f1 = EF_present then begin
-          match List.assoc_opt lbl1 r2.er_fields with
-          | Some f2 ->
-              if effect_flag_repr f2 = EF_absent then
-                raise_unexplained_for Unify
-          | None ->
-              if r2.er_closed then
-                raise_unexplained_for Unify
-              else
-                let needed = Btype.new_effect_row ~closed:false [(lbl1, f1)] in
-                try unify_effect_rows env eff2 needed with _ -> raise_unexplained_for Unify
-        end
-      ) r1.er_fields;
-      if not r1.er_closed then begin
-        if r2.er_closed then
-          raise_unexplained_for Unify
-        else
-          try unify_effect_rows env eff1 eff2 with _ -> ()
+  let snap = Btype.snapshot () in
+  try
+    let visited = TypePairs.create 17 in
+    let rec sub env t1 t2 =
+      let t1 = expand_head env t1 in
+      let t2 = expand_head env t2 in
+      if eq_type t1 t2 then ()
+      else if TypePairs.mem visited (t1, t2) then ()
+      else begin
+        TypePairs.add visited (t1, t2);
+        match get_desc t1, get_desc t2 with
+        | Tvar _, _ | _, Tvar _ ->
+            unify env t1 t2
+        | Tarrow (l1, a1, r1, c1, eff1), Tarrow (l2, a2, r2, c2, eff2)
+          when compatible_labels ~in_pattern_mode:false l1 l2 ->
+            sub env a2 a1;
+            sub env r1 r2;
+            sub_effect_row env eff1 eff2;
+            begin match is_commu_ok c1, is_commu_ok c2 with
+            | false, true -> set_commu_ok c1
+            | true, false -> set_commu_ok c2
+            | false, false -> link_commu ~inside:c1 c2
+            | true, true -> ()
+            end
+        | Ttuple l1, Ttuple l2 when List.length l1 = List.length l2 ->
+            List.iter2 (fun (_, t1) (_, t2) -> sub env t1 t2) l1 l2
+        | _ ->
+            unify env t1 t2
       end
-    end
-  in
-  sub env ty expected_ty
+    and sub_effect_row env eff1 eff2 =
+      let r1 = effect_row_repr eff1 in
+      let r2 = effect_row_repr eff2 in
+      if r1.er_closed && r1.er_fields = [] then
+        ()
+      else begin
+        List.iter (fun (lbl1, f1) ->
+          if effect_flag_repr f1 = EF_present then begin
+            match List.assoc_opt lbl1 r2.er_fields with
+            | Some f2 ->
+                if effect_flag_repr f2 = EF_absent then
+                  raise_unexplained_for Unify
+            | None ->
+                if r2.er_closed then
+                  raise_unexplained_for Unify
+                else
+                  let needed = Btype.new_effect_row ~closed:false [(lbl1, f1)] in
+                  try unify_effect_rows env eff2 needed with _ -> raise_unexplained_for Unify
+          end
+        ) r1.er_fields;
+        if not r1.er_closed then begin
+          if r2.er_closed then
+            raise_unexplained_for Unify
+          else
+            try unify_effect_rows env eff1 eff2 with _ -> ()
+        end
+      end
+    in
+    sub env ty expected_ty
+  with
+  | Unify_trace trace ->
+      undo_compress snap;
+      let trace =
+        if trace <> [] then trace
+        else [Errortrace.Diff { got = ty; expected = expected_ty }]
+      in
+      raise (Unify (expand_to_unification_error env trace))
+  | Unify _ as exn ->
+      undo_compress snap;
+      raise exn
 
                               (*******************)
                               (*  Miscellaneous  *)

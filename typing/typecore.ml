@@ -742,8 +742,6 @@ let type_continuation_pat ?k_eff env expected_ty sp =
 let widen_existential_type_hook = ref (fun _env ty -> ty)
 
 let unify_exp_types ?sexp loc env ty expected_ty =
-  (* Format.eprintf "@[%a@ %a@]@." Printtyp.raw_type_expr exp.exp_type
-    Printtyp.raw_type_expr expected_ty; *)
   let ty =
     match get_desc (expand_head env expected_ty) with
     | Tvar _ -> !widen_existential_type_hook env ty
@@ -3140,13 +3138,17 @@ type ambient_scope = {
 
 let ambient_effect_stack = ref ([] : ambient_scope list)
 
-let push_ambient_scope ?(param_tys=[]) () =
+let push_ambient_scope ?(param_tys=[]) ?expected_eff () =
   let inherited =
     match !ambient_effect_stack with
     | [] -> []
     | parent :: _ -> parent.amb_param_tys
   in
-  let row = Btype.fresh_ambient_row_var () in
+  let row =
+    match expected_eff with
+    | Some eff -> eff
+    | None -> Btype.fresh_ambient_row_var ()
+  in
   let scope = { amb_row = row; amb_param_tys = param_tys @ inherited } in
   ambient_effect_stack := scope :: !ambient_effect_stack;
   scope
@@ -4049,7 +4051,7 @@ let type_approx_fun_one_param
     | None -> false
     | Some spat -> check_poly_constraint spat env label
   in
-  let { ty_param; ty_ret } =
+  let { ty_param; ty_ret; _ } =
     match
       filter_arrow env ~in_apply:false ty_expected label ~param_hole:has_poly
     with
@@ -4062,7 +4064,7 @@ let type_approx_fun_one_param
       let level = get_level (instance ty_expected) in
       Error.log_or_raise loc_fun env err;
       let ty_param = newty2 ~level (Tpoly (newvar2 level, [])) in
-      { ty_param; ty_ret = ty_expected}
+      { ty_param; ty_ret = ty_expected; ty_eff = Btype.fresh_ambient_row_var ~level () }
 
   in
   begin
@@ -6302,7 +6304,7 @@ and split_function_ty env ty_expected ~arg_label ~has_poly ~first ~in_function =
         Error.log_or_raise loc env err;
         let level = get_level (instance ty_expected) in
         let ty_param = newty2 ~level (Tpoly (newvar2 level, [])) in
-        { ty_param; ty_ret = ty_expected}
+        { ty_param; ty_ret = ty_expected; ty_eff = Btype.fresh_ambient_row_var ~level () }
     end
   in
   if !Clflags.principal
@@ -6355,6 +6357,7 @@ and split_function_mty env ty_expected ~arg_label ~first ~in_function =
 *)
 and type_function
       ?(param_tys = [])
+      ?expected_eff
       env params_suffix body_constraint body ty_expected ~first ~in_function
   =
   let ty_fun, (loc_function : Location.t) = in_function in
@@ -6403,7 +6406,7 @@ and type_function
       :: rest
     ->
       let has_poly = check_poly_constraint pat env arg_label in
-      let { filtered_arrow = { ty_param; ty_ret }; ty_arg_mono } =
+      let { filtered_arrow = { ty_param; ty_ret; ty_eff }; ty_arg_mono } =
         split_function_ty env ty_expected ~arg_label ~first ~in_function
           ~has_poly
       in
@@ -6445,7 +6448,9 @@ and type_function
             fun () pat ~when_env:_ ~ext_env ~cont:_ ~ty_expected ~ty_infer:_
               ~contains_gadt:param_contains_gadt ->
               let _, params, body, newtypes, suffix_contains_gadt =
-                type_function ~param_tys:(ty_arg_mono :: param_tys) ext_env rest body_constraint body
+                type_function ~param_tys:(ty_arg_mono :: param_tys)
+                  ?expected_eff:(if rest = [] then Some ty_eff else None)
+                  ext_env rest body_constraint body
                   ty_expected ~first:false ~in_function
               in
               let contains_gadt =
@@ -6559,7 +6564,7 @@ and type_function
       in
       exp_type, param :: params, body, [], contains_gadt
   | [] ->
-    let scope = push_ambient_scope ~param_tys () in
+    let scope = push_ambient_scope ~param_tys ?expected_eff () in
     let exp_type, body =
       try
         match body with
@@ -7830,11 +7835,11 @@ and type_cases
 and type_function_cases_expect
       env ty_expected loc cases attrs ~first ~in_function =
   Builtin_attributes.warning_scope attrs begin fun () ->
-    let { filtered_arrow = { ty_param; ty_ret }; ty_arg_mono } =
+    let { filtered_arrow = { ty_param; ty_ret; ty_eff }; ty_arg_mono } =
       split_function_ty env ty_expected ~arg_label:Nolabel
         ~first ~in_function ~has_poly:false
     in
-    let scope = push_ambient_scope ~param_tys:[ty_arg_mono] () in
+    let scope = push_ambient_scope ~param_tys:[ty_arg_mono] ~expected_eff:ty_eff () in
     let cases, partial =
       try
         type_cases Value env ty_arg_mono (mk_expected ty_ret)

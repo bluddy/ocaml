@@ -358,6 +358,7 @@ val unify_var: Env.t -> type_expr -> type_expr -> unit
 type filtered_arrow =
   { ty_param : type_expr;
     ty_ret : type_expr;
+    ty_eff : effect_row;
   }
 
 type filter_arrow_failure =
